@@ -2,3 +2,8 @@ Note.txt
 note2.txt
 .claude/
 mykey.pem
+
+# Node / backend
+node_modules/
+.env
+*.log

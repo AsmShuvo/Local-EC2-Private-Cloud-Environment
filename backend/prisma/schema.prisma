@@ -1,0 +1,37 @@
+// ------------------------------------------------------------------
+// Prisma schema
+// Docs: https://pris.ly/d/prisma-schema
+//
+// Architectural notes:
+//  - `generator client` emits the type-safe Prisma Client into
+//    node_modules/@prisma/client on `prisma generate`.
+//  - The datasource reads DATABASE_URL from the environment (12-factor),
+//    so no secrets live in this file.
+//  - Neon exposes a POOLED endpoint (…-pooler…) and a DIRECT endpoint.
+//    The pooled URL is ideal for the app runtime (serverless-friendly),
+//    but Prisma Migrate needs a direct connection. `directUrl` lets the
+//    client use the pooled URL while migrations use the direct one.
+//    If you only have the pooled URL, migrations still work in most
+//    cases; set DIRECT_URL when you hit advisory-lock errors.
+// ------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Optional: direct (non-pooled) Neon endpoint used only by Prisma Migrate.
+  // Falls back gracefully if unset in older Prisma; keep DIRECT_URL in .env
+  // pointing at the non-pooler host when running migrations against Neon.
+  directUrl = env("DIRECT_URL")
+}
+
+// Placeholder model to verify migration capability end-to-end.
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+}

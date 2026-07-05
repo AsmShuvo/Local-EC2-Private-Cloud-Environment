@@ -6,3 +6,4 @@ note2.txt
 node_modules/
 .env
 *.log
+/generated/prisma

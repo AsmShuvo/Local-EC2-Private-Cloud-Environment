@@ -143,6 +143,48 @@ Open **http://localhost:5173** — the status badge should read **CONNECTED**.
 
 ---
 
+## Troubleshooting: Neon DB connection timeout inside the VM (IPv6 / DNS)
+
+**Symptom.** The API works perfectly on the host, but inside the multipass VM
+every database call fails. `GET`/`POST /api/projects` return `500`
+(`{"error":"Failed to fetch projects"}` / `{"error":"Failed to create project"}`),
+and the server logs show a WebSocket `ETIMEDOUT` / `ENETUNREACH` connecting to
+`wss://...neon.tech:443`.
+
+**Root cause.** The VM resolves the Neon hostname to **IPv6 (AAAA) records**
+(e.g. `2600:1f10:...`), but multipass VMs have **no IPv6 default route**. Node's
+default DNS ordering hands those IPv6 addresses to the Neon serverless driver
+first, so the connection hangs until it times out. Neon itself is healthy — the
+problem is purely IPv6 egress from the VM.
+
+Confirm it inside the VM:
+```bash
+getent hosts ep-<your-endpoint>.aws.neon.tech   # returns only 2600:... (IPv6)
+ip -6 route show default                          # empty → no IPv6 route
+```
+
+**The fix.** Force Node to prefer IPv4 when resolving hostnames. Add this at the
+very top of `server.js` (right after `require("dotenv/config")`, before any
+Prisma/Neon code):
+```js
+require("node:dns").setDefaultResultOrder("ipv4first");
+```
+This makes the Neon driver connect over IPv4, which the VM *can* route. It is a
+no-op on the host (which has working IPv4/IPv6), so it is safe everywhere.
+
+After adding it, restart the backend in the VM:
+```bash
+sudo systemctl restart ec2-backend        # if running as the systemd service
+# then verify from the host:
+curl http://<VM_IP>:5000/api/projects       # → 200 [] instead of 500
+```
+
+> Equivalent alternative (no code change): start Node with
+> `NODE_OPTIONS="--dns-result-order=ipv4first" node server.js`. The in-code
+> version is preferred so the fix travels with the app.
+
+---
+
 ## Notes / architecture
 
 - This is **Prisma 7**: the generator is `prisma-client-js` and the client is

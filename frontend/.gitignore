@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# AWS / SSH Private Keys
+*.pem
+my-ec2-key.pem
+my-ec2-key.pem.pub

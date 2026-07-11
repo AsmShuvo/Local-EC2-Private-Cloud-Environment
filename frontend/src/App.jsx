@@ -2,15 +2,28 @@ import { useState, useEffect, useCallback } from "react";
 import api, { API_BASE_URL, describeError } from "./api";
 import "./App.css";
 
+function StatusBadge({ status }) {
+  const s = (status || "RUNNING").toUpperCase();
+  const cls = s === "RUNNING" ? "running" : "stopped";
+  return (
+    <span className={`status-badge ${cls}`}>
+      <span className="status-dot-sm" />
+      {s}
+    </span>
+  );
+}
+
 function App() {
   const [projects, setProjects] = useState([]);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
-  const [loading, setLoading] = useState(true); // initial fetch
-  const [submitting, setSubmitting] = useState(false); // form POST
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [online, setOnline] = useState(null); // null=unknown, true/false
+  const [online, setOnline] = useState(null);
+  // Per-row action in flight: { [id]: "start" | "stop" | "terminate" }
+  const [rowBusy, setRowBusy] = useState({});
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
@@ -35,7 +48,6 @@ function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim() || submitting) return;
-
     setSubmitting(true);
     setError("");
     try {
@@ -43,7 +55,6 @@ function App() {
         name: name.trim(),
         description: description.trim(),
       });
-      // Instant list update — prepend the freshly created project.
       setProjects((prev) => [data, ...prev]);
       setName("");
       setDescription("");
@@ -57,13 +68,63 @@ function App() {
     }
   };
 
+  const setBusy = (id, action) =>
+    setRowBusy((prev) => {
+      const next = { ...prev };
+      if (action) next[id] = action;
+      else delete next[id];
+      return next;
+    });
+
+  // Start / stop -> POST, then swap the returned row into place.
+  const changeStatus = async (id, action) => {
+    if (rowBusy[id]) return;
+    setBusy(id, action);
+    setError("");
+    try {
+      const { data } = await api.post(`/api/projects/${id}/${action}`);
+      setProjects((prev) => prev.map((p) => (p.id === id ? data : p)));
+      setOnline(true);
+    } catch (err) {
+      console.error(err);
+      setError(describeError(err));
+      setOnline(false);
+    } finally {
+      setBusy(id, null);
+    }
+  };
+
+  // Terminate -> DELETE, then drop the row.
+  const terminate = async (id) => {
+    if (rowBusy[id]) return;
+    if (
+      !window.confirm(
+        "Terminate this instance? This permanently deletes the record."
+      )
+    )
+      return;
+    setBusy(id, "terminate");
+    setError("");
+    try {
+      await api.delete(`/api/projects/${id}`);
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+      setOnline(true);
+    } catch (err) {
+      console.error(err);
+      setError(describeError(err));
+      setOnline(false);
+    } finally {
+      setBusy(id, null);
+    }
+  };
+
   const formatDate = (iso) => {
-    if (!iso) return "";
+    if (!iso) return "—";
     try {
       return new Date(iso).toLocaleString(undefined, {
+        year: "numeric",
         month: "short",
         day: "numeric",
-        year: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       });
@@ -72,63 +133,103 @@ function App() {
     }
   };
 
+  const statusLabel =
+    online === false ? "Offline" : online ? "Healthy" : "Connecting";
+  const statusDot = online === false ? "down" : online ? "up" : "idle";
+  const latest = projects[0];
+  const runningCount = projects.filter(
+    (p) => (p.status || "RUNNING").toUpperCase() === "RUNNING"
+  ).length;
+
   return (
     <div className="app">
-      <div className="bg-grid" aria-hidden="true" />
-      <div className="bg-glow bg-glow--cyan" aria-hidden="true" />
-      <div className="bg-glow bg-glow--purple" aria-hidden="true" />
+      {/* Top navigation */}
+      <nav className="topnav">
+        <span className="brandmark">S</span>
+        <span className="brandname">
+          Stratus <span className="thin">Console</span>
+        </span>
+        <span className="topnav-divider" />
+        <span className="topnav-crumb">Instance Manager</span>
+        <span className="topnav-spacer" />
+        <div className="topnav-right">
+          <span className="pill-status">
+            <span className={`dot ${statusDot}`} />
+            {statusLabel}
+          </span>
+          <span className="topnav-region">local-ec2 · vm</span>
+        </div>
+      </nav>
 
-      <div className="shell">
-        <header className="topbar glass">
-          <div className="brand">
-            <span className="brand-mark">◈</span>
+      {/* Service header */}
+      <div className="subhead">
+        <div className="breadcrumb">
+          <a href="#">Stratus</a> &nbsp;/&nbsp; <a href="#">Deployments</a>{" "}
+          &nbsp;/&nbsp; Instances
+        </div>
+        <h1>Instances</h1>
+        <p className="subtitle">
+          Provision, start, stop and terminate project instances stored in your
+          Neon database, served by the Local EC2 backend.
+        </p>
+      </div>
+
+      <div className="content">
+        {/* Dashboard stats */}
+        <div className="stats">
+          <div className="stat">
+            <span className="stat-chip indigo">◈</span>
             <div>
-              <h1 className="brand-title">
-                CLOUD<span className="accent">OPS</span>
-              </h1>
-              <p className="brand-sub">Local EC2 · Project Control Deck</p>
+              <div className="stat-label">Total instances</div>
+              <div className="stat-value">{loading ? "—" : projects.length}</div>
             </div>
           </div>
-
-          <div className="status">
-            <span
-              className={`status-dot ${
-                online === false ? "is-down" : online ? "is-up" : "is-idle"
-              }`}
-            />
-            <span className="status-text">
-              {online === false
-                ? "OFFLINE"
-                : online
-                ? "CONNECTED"
-                : "CONNECTING"}
-            </span>
-            <code className="status-url">{API_BASE_URL}</code>
+          <div className="stat">
+            <span className="stat-chip mint">▶</span>
+            <div>
+              <div className="stat-label">Running</div>
+              <div className="stat-value">{loading ? "—" : runningCount}</div>
+            </div>
           </div>
-        </header>
+          <div className="stat">
+            <span className="stat-chip amber">◷</span>
+            <div>
+              <div className="stat-label">Latest</div>
+              <div className="stat-value sm">
+                {loading ? "—" : latest ? latest.name : "None yet"}
+              </div>
+            </div>
+          </div>
+        </div>
 
         {error && (
-          <div className="banner glass" role="alert">
-            <span className="banner-icon">⚠</span>
-            <span className="banner-text">{error}</span>
-            <button className="banner-retry" onClick={fetchProjects}>
-              Retry
-            </button>
+          <div className="flashbar" role="alert">
+            <span className="flash-icon">⛔</span>
+            <span className="flash-text">
+              <strong>Could not complete the request</strong>
+              {error}
+            </span>
+            <button onClick={fetchProjects}>Retry</button>
           </div>
         )}
 
-        <main className="layout">
-          {/* Create form */}
-          <section className="panel glass form-panel">
-            <div className="panel-head">
-              <h2 className="panel-title">Deploy New Project</h2>
-              <p className="panel-hint">Push a record to the live backend</p>
+        {/* Create instance */}
+        <section className="panel">
+          <div className="panel-header">
+            <div className="htitle">
+              <span className="accent-bar" />
+              <div>
+                <h2>Launch instance</h2>
+                <p className="hdesc">Provision a new project instance.</p>
+              </div>
             </div>
-
-            <form className="form" onSubmit={handleSubmit}>
-              <label className="field">
-                <span className="field-label">Project Name</span>
+          </div>
+          <div className="panel-body">
+            <form onSubmit={handleSubmit}>
+              <div className="form-row">
+                <label htmlFor="p-name">Instance name</label>
                 <input
+                  id="p-name"
                   className="input"
                   type="text"
                   placeholder="e.g. edge-render-node"
@@ -136,81 +237,181 @@ function App() {
                   onChange={(e) => setName(e.target.value)}
                   disabled={submitting}
                 />
-              </label>
-
-              <label className="field">
-                <span className="field-label">Description</span>
+              </div>
+              <div className="form-row">
+                <label htmlFor="p-desc">
+                  Description <span className="opt">— optional</span>
+                </label>
                 <textarea
-                  className="input textarea"
-                  placeholder="What does this project do?"
-                  rows={4}
+                  id="p-desc"
+                  className="textarea"
+                  placeholder="What is this instance for?"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   disabled={submitting}
                 />
-              </label>
-
-              <button
-                className="btn"
-                type="submit"
-                disabled={submitting || !name.trim()}
-              >
-                {submitting ? (
-                  <>
-                    <span className="spinner" /> Deploying…
-                  </>
-                ) : (
-                  <>+ Create Project</>
-                )}
-              </button>
+              </div>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setName("");
+                    setDescription("");
+                  }}
+                  disabled={submitting}
+                >
+                  Clear
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={submitting || !name.trim()}
+                >
+                  {submitting ? (
+                    <>
+                      <span className="spinner" /> Launching…
+                    </>
+                  ) : (
+                    "Launch instance"
+                  )}
+                </button>
+              </div>
             </form>
-          </section>
+          </div>
+        </section>
 
-          {/* Projects grid */}
-          <section className="panel glass list-panel">
-            <div className="panel-head list-head">
+        {/* Instances table */}
+        <section className="panel">
+          <div className="panel-header">
+            <div className="htitle">
+              <span className="accent-bar" />
               <div>
-                <h2 className="panel-title">Active Projects</h2>
-                <p className="panel-hint">Fetched from the Neon database</p>
+                <h2>Instances</h2>
+                <p className="hdesc">Loaded from the database on start.</p>
               </div>
-              <span className="count-pill">{projects.length}</span>
             </div>
+            <span className="count-badge">{projects.length}</span>
+          </div>
 
-            {loading ? (
-              <div className="grid">
-                {[0, 1, 2, 3].map((i) => (
-                  <div key={i} className="card card--skeleton" />
-                ))}
-              </div>
-            ) : projects.length === 0 ? (
-              <div className="empty">
-                <span className="empty-mark">⌁</span>
-                <p>No projects yet.</p>
-                <span className="empty-sub">
-                  Deploy your first one using the form.
-                </span>
-              </div>
-            ) : (
-              <div className="grid">
-                {projects.map((p) => (
-                  <article key={p.id} className="card">
-                    <div className="card-top">
-                      <span className="card-id">#{p.id}</span>
-                      <span className="card-date">{formatDate(p.createdAt)}</span>
-                    </div>
-                    <h3 className="card-name">{p.name}</h3>
-                    <p className="card-desc">
-                      {p.description || "No description provided."}
-                    </p>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-        </main>
+          <div className="table-wrap">
+            <table className="grid-table">
+              <thead>
+                <tr>
+                  <th className="col-id">ID</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Description</th>
+                  <th>Created</th>
+                  <th className="col-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  [0, 1, 2].map((i) => (
+                    <tr className="skeleton-row" key={i}>
+                      <td>
+                        <span style={{ width: "50%" }} />
+                      </td>
+                      <td>
+                        <span style={{ width: "60%" }} />
+                      </td>
+                      <td>
+                        <span style={{ width: "70%" }} />
+                      </td>
+                      <td>
+                        <span style={{ width: "80%" }} />
+                      </td>
+                      <td>
+                        <span style={{ width: "55%" }} />
+                      </td>
+                      <td>
+                        <span style={{ width: "90%" }} />
+                      </td>
+                    </tr>
+                  ))
+                ) : projects.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <div className="empty">
+                        <span className="emoji">🗂️</span>
+                        <strong>No instances yet</strong>
+                        Launch your first one using the form above.
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  projects.map((p) => {
+                    const busy = rowBusy[p.id];
+                    const status = (p.status || "RUNNING").toUpperCase();
+                    return (
+                      <tr key={p.id} className={busy ? "row-busy" : ""}>
+                        <td className="col-id">
+                          <span className="id-chip">#{p.id}</span>
+                        </td>
+                        <td className="col-name">
+                          <a href="#">{p.name}</a>
+                        </td>
+                        <td>
+                          <StatusBadge status={status} />
+                        </td>
+                        <td
+                          className={`col-desc ${p.description ? "" : "empty"}`}
+                        >
+                          {p.description || "No description"}
+                        </td>
+                        <td className="col-date">{formatDate(p.createdAt)}</td>
+                        <td className="col-actions">
+                          <div className="row-actions">
+                            <button
+                              className="rbtn"
+                              onClick={() => changeStatus(p.id, "start")}
+                              disabled={!!busy || status === "RUNNING"}
+                              title="Start instance"
+                            >
+                              {busy === "start" ? (
+                                <span className="spinner dark" />
+                              ) : (
+                                "Start"
+                              )}
+                            </button>
+                            <button
+                              className="rbtn"
+                              onClick={() => changeStatus(p.id, "stop")}
+                              disabled={!!busy || status === "STOPPED"}
+                              title="Stop instance"
+                            >
+                              {busy === "stop" ? (
+                                <span className="spinner dark" />
+                              ) : (
+                                "Stop"
+                              )}
+                            </button>
+                            <button
+                              className="rbtn danger"
+                              onClick={() => terminate(p.id)}
+                              disabled={!!busy}
+                              title="Terminate instance"
+                            >
+                              {busy === "terminate" ? (
+                                <span className="spinner dark" />
+                              ) : (
+                                "Terminate"
+                              )}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <footer className="footer">
-          <span>CLOUDOPS · powered by Express + Prisma + Neon</span>
+          Stratus Console · connected to <code>{API_BASE_URL}</code>
         </footer>
       </div>
     </div>

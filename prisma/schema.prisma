@@ -13,5 +13,6 @@ model CloudProject {
   id          Int      @id @default(autoincrement())
   name        String
   description String?
+  status      String   @default("RUNNING")
   createdAt   DateTime @default(now())
 }

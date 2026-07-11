@@ -6,6 +6,13 @@ node_modules/
 .env.*
 !.env.example
 
+# SSH / private keys — never commit
+*.pem
+*.key
+my-ec2-key.pem
+my-ec2-key.pem.pub
+*.pub
+
 # Prisma generated client
 /generated/
 

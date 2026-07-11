@@ -1,9 +1,29 @@
+# Dependencies
+node_modules/
+
+# Environment variables (secrets)
+.env
+.env.*
+!.env.example
+
+# Prisma generated client
+/generated/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build output
+dist/
+build/
+
+# Editor / OS
+.claude/
+.vscode/
+.idea/
+.DS_Store
+
+# Personal notes
 Note.txt
 note2.txt
-.claude/
-
-# Node / backend
-node_modules/
-.env
-*.log
-/generated/prisma
+Note.md

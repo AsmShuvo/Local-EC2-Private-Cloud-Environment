@@ -1,7 +1,7 @@
 import axios from "axios";
 
 // Live "Local EC2" backend running inside the multipass VM.
-export const API_BASE_URL = "http://10.176.164.96:5000";
+export const API_BASE_URL = "http://10.176.164.12:5000";
 
 const api = axios.create({
   baseURL: API_BASE_URL,

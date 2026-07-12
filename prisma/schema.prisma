@@ -17,5 +17,8 @@ model CloudProject {
   instanceName String?  @unique
   ipAddress    String?
   keyName      String?
+  cpu          Int      @default(1)
+  memory       String   @default("1G")
+  instanceType String   @default("t2.micro")
   createdAt    DateTime @default(now())
 }

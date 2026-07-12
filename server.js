@@ -233,10 +233,53 @@ function generateKeyPair(comment) {
   return { privateKeyPem, openssh };
 }
 
+// ---------------------------------------------------------------------------
+// Instance types (AWS-style). The server catalog is authoritative: a known
+// instanceType always resolves to its own cpu/memory, so a client can't ask for
+// "t2.micro" and secretly get 8 vCPUs. Unknown types fall back to validated
+// custom cpu/memory, and finally to the default type.
+// ---------------------------------------------------------------------------
+const INSTANCE_TYPES = {
+  "t2.micro": { cpu: 1, memory: "1G" },
+  "t2.small": { cpu: 1, memory: "2G" },
+  "t2.medium": { cpu: 2, memory: "4G" },
+};
+const DEFAULT_INSTANCE_TYPE = "t2.micro";
+
+function resolveSpec(body = {}) {
+  const requested =
+    typeof body.instanceType === "string" ? body.instanceType.trim() : "";
+
+  if (INSTANCE_TYPES[requested]) {
+    return { instanceType: requested, ...INSTANCE_TYPES[requested] };
+  }
+
+  // Allow an explicit custom spec, but validate it hard.
+  const cpuNum = parseInt(body.cpu, 10);
+  const cpu = Number.isInteger(cpuNum) && cpuNum >= 1 && cpuNum <= 8 ? cpuNum : null;
+  const mem =
+    typeof body.memory === "string" && /^[1-9][0-9]?G$/.test(body.memory.trim())
+      ? body.memory.trim()
+      : null;
+  if (cpu && mem) return { instanceType: "custom", cpu, memory: mem };
+
+  return {
+    instanceType: DEFAULT_INSTANCE_TYPE,
+    ...INSTANCE_TYPES[DEFAULT_INSTANCE_TYPE],
+  };
+}
+
+// Expose the catalog so the UI can stay in sync with the server.
+app.get("/api/instance-types", (req, res) => {
+  res.status(200).json(
+    Object.entries(INSTANCE_TYPES).map(([name, spec]) => ({ name, ...spec }))
+  );
+});
+
 // Launch with the public key injected via cloud-init user-data, piped over
 // STDIN (`--cloud-init -`). Using stdin avoids the snap-confinement problem
 // where multipassd cannot read a temp file (e.g. under /tmp).
-async function launchWithKey(instanceName, openssh) {
+async function launchWithKey(instanceName, openssh, { cpu, memory }) {
   const cloudInit = `#cloud-config\nssh_authorized_keys:\n  - ${openssh}\n`;
   const bin = await ensureMultipassBin();
   const args = [
@@ -244,9 +287,9 @@ async function launchWithKey(instanceName, openssh) {
     "--name",
     instanceName,
     "--cpus",
-    "1",
+    String(cpu),
     "--memory",
-    "1G",
+    String(memory),
     "--cloud-init",
     "-",
   ];
@@ -317,13 +360,16 @@ app.post("/api/projects", async (req, res) => {
 
   const instanceName = uniqueInstanceName(name);
   const keyName = `${instanceName}-key`;
+  // Resolve the requested instance type into concrete, validated specs.
+  const { instanceType, cpu, memory } = resolveSpec(req.body);
+
   try {
     // Fresh, unique SSH key pair for this instance (private key returned once).
     const { privateKeyPem, openssh } = generateKeyPair(keyName);
 
     // Launch is slow (image boot) — allow up to 5 minutes. The public key is
     // baked into the VM's authorized_keys via cloud-init.
-    await launchWithKey(instanceName, openssh);
+    await launchWithKey(instanceName, openssh, { cpu, memory });
 
     const ipAddress = await getInstanceIp(instanceName);
 
@@ -336,6 +382,9 @@ app.post("/api/projects", async (req, res) => {
           instanceName,
           ipAddress,
           keyName,
+          cpu,
+          memory,
+          instanceType,
         },
       })
     );

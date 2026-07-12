@@ -24,6 +24,13 @@ const safeFileName = (n) =>
     .replace(/[^a-zA-Z0-9-_]+/g, "-")
     .replace(/^-+|-+$/g, "") || "instance";
 
+// AWS-style instance types. Mirrors the server-side catalog (server is authoritative).
+const INSTANCE_TYPES = [
+  { name: "t2.micro", cpu: 1, memory: "1G", label: "1 vCPU · 1 GB RAM" },
+  { name: "t2.small", cpu: 1, memory: "2G", label: "1 vCPU · 2 GB RAM" },
+  { name: "t2.medium", cpu: 2, memory: "4G", label: "2 vCPU · 4 GB RAM" },
+];
+
 function StatusBadge({ status }) {
   const s = (status || "RUNNING").toUpperCase();
   const cls = s === "RUNNING" ? "running" : "stopped";
@@ -39,6 +46,7 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [instanceType, setInstanceType] = useState("t2.micro");
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -78,9 +86,17 @@ function App() {
     setSubmitting(true);
     setError("");
     try {
+      const spec =
+        INSTANCE_TYPES.find((t) => t.name === instanceType) || INSTANCE_TYPES[0];
       const { data } = await api.post(
         "/api/projects",
-        { name: name.trim(), description: description.trim() },
+        {
+          name: name.trim(),
+          description: description.trim(),
+          instanceType: spec.name,
+          cpu: spec.cpu,
+          memory: spec.memory,
+        },
         { timeout: TIMEOUTS.launch }
       );
       // The private key comes back exactly once — download it, never store it.
@@ -296,6 +312,26 @@ function App() {
                   disabled={submitting}
                 />
               </div>
+              <div className="form-row">
+                <label htmlFor="p-type">Instance type</label>
+                <select
+                  id="p-type"
+                  className="input select"
+                  value={instanceType}
+                  onChange={(e) => setInstanceType(e.target.value)}
+                  disabled={submitting}
+                >
+                  {INSTANCE_TYPES.map((t) => (
+                    <option key={t.name} value={t.name}>
+                      {t.name} — {t.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="field-hint">
+                  Sets the real vCPU and memory the VM is launched with.
+                </span>
+              </div>
+
               <div className="form-actions">
                 {submitting && (
                   <span className="launch-hint">
@@ -350,6 +386,7 @@ function App() {
                 <tr>
                   <th className="col-id">ID</th>
                   <th>Name</th>
+                  <th>Instance type</th>
                   <th>Status</th>
                   <th>Description</th>
                   <th>Created</th>
@@ -367,6 +404,9 @@ function App() {
                         <span style={{ width: "60%" }} />
                       </td>
                       <td>
+                        <span style={{ width: "65%" }} />
+                      </td>
+                      <td>
                         <span style={{ width: "70%" }} />
                       </td>
                       <td>
@@ -382,7 +422,7 @@ function App() {
                   ))
                 ) : projects.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <div className="empty">
                         <span className="emoji">🗂️</span>
                         <strong>No instances yet</strong>
@@ -424,6 +464,14 @@ function App() {
                           {p.instanceName && (
                             <div className="inst-name">{p.instanceName}</div>
                           )}
+                        </td>
+                        <td className="col-type">
+                          <span className="type-badge">
+                            {p.instanceType || "t2.micro"}
+                          </span>
+                          <div className="type-specs">
+                            {(p.cpu ?? 1)} vCPU · {p.memory || "1G"} RAM
+                          </div>
                         </td>
                         <td>
                           <StatusBadge status={status} />

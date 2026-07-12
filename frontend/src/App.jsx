@@ -2,7 +2,27 @@ import { useState, useEffect, useCallback } from "react";
 import api, { API_BASE_URL, TIMEOUTS, describeError } from "./api";
 import TerminalModal from "./TerminalModal";
 import MonitoringModal from "./MonitoringModal";
+import KeyModal from "./KeyModal";
 import "./App.css";
+
+// Trigger a browser download of a text file (the private key .pem).
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "application/x-pem-file" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const safeFileName = (n) =>
+  String(n || "instance")
+    .trim()
+    .replace(/[^a-zA-Z0-9-_]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "instance";
 
 function StatusBadge({ status }) {
   const s = (status || "RUNNING").toUpperCase();
@@ -29,6 +49,8 @@ function App() {
   // Which instance (if any) has its terminal / monitoring modal open.
   const [terminalProject, setTerminalProject] = useState(null);
   const [monitorProject, setMonitorProject] = useState(null);
+  // Set once after a create returns a private key (drives the download + modal).
+  const [keyModal, setKeyModal] = useState(null);
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
@@ -61,10 +83,23 @@ function App() {
         { name: name.trim(), description: description.trim() },
         { timeout: TIMEOUTS.launch }
       );
-      setProjects((prev) => [data, ...prev]);
+      // The private key comes back exactly once — download it, never store it.
+      const { privateKey, ...project } = data;
+      setProjects((prev) => [project, ...prev]);
       setName("");
       setDescription("");
       setOnline(true);
+
+      if (privateKey) {
+        const filename = `${safeFileName(project.name)}-key.pem`;
+        downloadTextFile(filename, privateKey);
+        setKeyModal({
+          filename,
+          keyName: project.keyName,
+          instanceName: project.instanceName,
+          ipAddress: project.ipAddress,
+        });
+      }
     } catch (err) {
       console.error(err);
       setError(describeError(err));
@@ -365,7 +400,17 @@ function App() {
                           <span className="id-chip">#{p.id}</span>
                         </td>
                         <td className="col-name">
-                          <a href="#">{p.name}</a>
+                          <span className="name-row">
+                            <a href="#">{p.name}</a>
+                            {p.keyName && (
+                              <span
+                                className="key-badge"
+                                title={`Secured with key pair: ${p.keyName}`}
+                              >
+                                🔑
+                              </span>
+                            )}
+                          </span>
                           <div className="ip-line">
                             <span className="ip-label">IPv4</span>
                             {p.ipAddress ? (
@@ -469,6 +514,9 @@ function App() {
           project={monitorProject}
           onClose={() => setMonitorProject(null)}
         />
+      )}
+      {keyModal && (
+        <KeyModal info={keyModal} onClose={() => setKeyModal(null)} />
       )}
     </div>
   );

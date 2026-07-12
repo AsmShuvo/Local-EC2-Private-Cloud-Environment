@@ -16,5 +16,6 @@ model CloudProject {
   status       String   @default("RUNNING")
   instanceName String?  @unique
   ipAddress    String?
+  keyName      String?
   createdAt    DateTime @default(now())
 }

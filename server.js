@@ -7,9 +7,10 @@ require("node:dns").setDefaultResultOrder("ipv4first");
 
 const express = require("express");
 const cors = require("cors");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { promisify } = require("node:util");
 const { URL } = require("node:url");
+const crypto = require("node:crypto");
 const pty = require("node-pty");
 const { PrismaClient } = require("@prisma/client");
 const { PrismaNeon } = require("@prisma/adapter-neon");
@@ -193,6 +194,99 @@ function isNotFoundError(err) {
 }
 
 // ---------------------------------------------------------------------------
+// SSH key-pair generation (like an AWS EC2 key pair)
+//
+// Generates a fresh RSA pair per instance. The private key (PKCS#1 .pem, the
+// AWS-style "BEGIN RSA PRIVATE KEY") is returned to the client EXACTLY ONCE and
+// never stored. The public key is converted to OpenSSH authorized_keys format
+// and baked into the VM via cloud-init.
+// ---------------------------------------------------------------------------
+
+// SSH wire encodings: length-prefixed string and mpint (big-endian, sign-safe).
+function sshString(buf) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(buf.length);
+  return Buffer.concat([len, buf]);
+}
+function sshMpint(buf) {
+  let b = buf;
+  if (b.length && (b[0] & 0x80)) b = Buffer.concat([Buffer.from([0x00]), b]); // keep positive
+  return sshString(b);
+}
+function jwkRsaToOpenSSH(jwk, comment = "") {
+  const e = Buffer.from(jwk.e, "base64url");
+  const n = Buffer.from(jwk.n, "base64url");
+  const blob = Buffer.concat([
+    sshString(Buffer.from("ssh-rsa")),
+    sshMpint(e),
+    sshMpint(n),
+  ]);
+  return `ssh-rsa ${blob.toString("base64")}${comment ? " " + comment : ""}`;
+}
+
+function generateKeyPair(comment) {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" });
+  const openssh = jwkRsaToOpenSSH(publicKey.export({ format: "jwk" }), comment);
+  return { privateKeyPem, openssh };
+}
+
+// Launch with the public key injected via cloud-init user-data, piped over
+// STDIN (`--cloud-init -`). Using stdin avoids the snap-confinement problem
+// where multipassd cannot read a temp file (e.g. under /tmp).
+async function launchWithKey(instanceName, openssh) {
+  const cloudInit = `#cloud-config\nssh_authorized_keys:\n  - ${openssh}\n`;
+  const bin = await ensureMultipassBin();
+  const args = [
+    "launch",
+    "--name",
+    instanceName,
+    "--cpus",
+    "1",
+    "--memory",
+    "1G",
+    "--cloud-init",
+    "-",
+  ];
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      const e = new Error("multipass launch timed out after 300s");
+      e.kind = "TIMEOUT";
+      reject(e);
+    }, 300000);
+
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      if (err.code === "ENOENT") {
+        const e = new Error("Multipass CLI not found.");
+        e.kind = "NO_MULTIPASS";
+        return reject(e);
+      }
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve();
+      const e = new Error(
+        String(stderr || `multipass launch exited ${code}`).trim()
+      );
+      e.kind = "CMD_FAILED";
+      reject(e);
+    });
+
+    child.stdin.write(cloudInit);
+    child.stdin.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
@@ -222,12 +316,14 @@ app.post("/api/projects", async (req, res) => {
   }
 
   const instanceName = uniqueInstanceName(name);
+  const keyName = `${instanceName}-key`;
   try {
-    // Launch is slow (image boot) — allow up to 5 minutes.
-    await multipass(
-      ["launch", "--name", instanceName, "--cpus", "1", "--memory", "1G"],
-      { timeout: 300000 }
-    );
+    // Fresh, unique SSH key pair for this instance (private key returned once).
+    const { privateKeyPem, openssh } = generateKeyPair(keyName);
+
+    // Launch is slow (image boot) — allow up to 5 minutes. The public key is
+    // baked into the VM's authorized_keys via cloud-init.
+    await launchWithKey(instanceName, openssh);
 
     const ipAddress = await getInstanceIp(instanceName);
 
@@ -239,10 +335,12 @@ app.post("/api/projects", async (req, res) => {
           status: "RUNNING",
           instanceName,
           ipAddress,
+          keyName,
         },
       })
     );
-    res.status(201).json(project);
+    // The private key is sent EXACTLY ONCE and never persisted server-side.
+    res.status(201).json({ ...project, privateKey: privateKeyPem });
   } catch (err) {
     console.error("Error launching VM:", err);
     // Best-effort cleanup so a half-launched VM does not linger on the host.

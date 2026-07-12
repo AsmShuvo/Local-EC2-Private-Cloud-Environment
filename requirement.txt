@@ -1,0 +1,80 @@
+===========================================================
+  STRATUS CONSOLE — Project Requirements (Simple English)
+===========================================================
+
+WHAT WE ARE BUILDING
+--------------------
+A small "mini-AWS" that runs on your own laptop.
+
+It is a web dashboard (like the AWS EC2 console) where you can create and
+manage real virtual machines (VMs) on your computer with a few clicks —
+instead of typing commands in a terminal. Each VM acts like a small cloud
+server ("instance").
+
+The VMs are created using Multipass (a tool that makes lightweight Ubuntu
+VMs). The dashboard makes it feel like a real cloud provider.
+
+
+THE MAIN PARTS
+--------------
+1. A web dashboard (the screen you look at and click).
+2. A backend server (the brain that does the real work on the laptop).
+3. A database in the cloud (remembers the list of instances).
+4. The actual VMs running on the laptop.
+
+
+FUNCTIONAL REQUIREMENTS (what the app can DO)
+---------------------------------------------
+
+A. Create an instance (Launch)
+   - The user types a name and description and clicks "Launch".
+   - The app creates a REAL virtual machine on the laptop.
+   - It shows the new instance in a table with its live IP address.
+
+B. See all instances
+   - A table lists every instance with its name, IP address, status,
+     and when it was created (like the AWS EC2 instances page).
+
+C. Start / Stop / Terminate an instance
+   - Start: powers a stopped VM back on.
+   - Stop: shuts the VM down (but keeps it).
+   - Terminate: permanently deletes the VM and removes it from the list.
+   - Each action shows a loading spinner and updates the row when done.
+
+D. Status indicator
+   - A colored badge shows if an instance is RUNNING (green) or STOPPED.
+
+E. Web terminal ("Instance Connect")
+   - Click "Connect" on a running instance to open a real terminal
+     INSIDE the browser.
+   - The user can type commands, install software, and run things on that
+     VM without ever opening their own terminal.
+
+F. Live monitoring (mini CloudWatch)
+   - Click "Monitor" to see live charts of the instance's CPU, memory,
+     disk, and network usage, updating every couple of seconds.
+
+G. Secure key pairs
+   - When an instance is created, the app makes a unique private key for it.
+   - The key is downloaded automatically as a ".pem" file (just like AWS).
+   - A warning tells the user to save it, because it is shown only once and
+     cannot be downloaded again.
+   - Instances with a key show a small key icon in the table.
+
+
+NON-FUNCTIONAL / RULES
+----------------------
+- The look and feel should resemble a real cloud console (clean, modern),
+  but with its own unique brand ("Stratus Console"), not a copy of AWS.
+- The backend must run on the laptop itself, because that is where the
+  VM tool (Multipass) lives.
+- Actions on real VMs can be slow (a VM can take up to a minute or two to
+  start), so the app must wait patiently and not fail early.
+- Secrets (private keys, database password) must never be saved into the
+  code or shared by accident.
+
+
+IN ONE LINE
+-----------
+"A personal, browser-based cloud console to create, control, connect to,
+ and monitor real virtual machines on your own laptop — like a tiny AWS."

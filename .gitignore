@@ -13,6 +13,11 @@ my-ec2-key.pem
 my-ec2-key.pem.pub
 *.pub
 
+# Downloaded key pairs / key notes (whole folder — includes extension-less keys)
+keeeeys/
+**/*-key
+mykey
+
 # Prisma generated client
 /generated/
 

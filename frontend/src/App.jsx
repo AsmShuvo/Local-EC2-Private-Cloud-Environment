@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import api, { API_BASE_URL, describeError } from "./api";
+import api, { API_BASE_URL, TIMEOUTS, describeError } from "./api";
+import TerminalModal from "./TerminalModal";
+import MonitoringModal from "./MonitoringModal";
 import "./App.css";
 
 function StatusBadge({ status }) {
@@ -24,6 +26,9 @@ function App() {
   const [online, setOnline] = useState(null);
   // Per-row action in flight: { [id]: "start" | "stop" | "terminate" }
   const [rowBusy, setRowBusy] = useState({});
+  // Which instance (if any) has its terminal / monitoring modal open.
+  const [terminalProject, setTerminalProject] = useState(null);
+  const [monitorProject, setMonitorProject] = useState(null);
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
@@ -51,10 +56,11 @@ function App() {
     setSubmitting(true);
     setError("");
     try {
-      const { data } = await api.post("/api/projects", {
-        name: name.trim(),
-        description: description.trim(),
-      });
+      const { data } = await api.post(
+        "/api/projects",
+        { name: name.trim(), description: description.trim() },
+        { timeout: TIMEOUTS.launch }
+      );
       setProjects((prev) => [data, ...prev]);
       setName("");
       setDescription("");
@@ -82,7 +88,11 @@ function App() {
     setBusy(id, action);
     setError("");
     try {
-      const { data } = await api.post(`/api/projects/${id}/${action}`);
+      const { data } = await api.post(
+        `/api/projects/${id}/${action}`,
+        {},
+        { timeout: TIMEOUTS.action }
+      );
       setProjects((prev) => prev.map((p) => (p.id === id ? data : p)));
       setOnline(true);
     } catch (err) {
@@ -106,7 +116,7 @@ function App() {
     setBusy(id, "terminate");
     setError("");
     try {
-      await api.delete(`/api/projects/${id}`);
+      await api.delete(`/api/projects/${id}`, { timeout: TIMEOUTS.terminate });
       setProjects((prev) => prev.filter((p) => p.id !== id));
       setOnline(true);
     } catch (err) {
@@ -252,6 +262,11 @@ function App() {
                 />
               </div>
               <div className="form-actions">
+                {submitting && (
+                  <span className="launch-hint">
+                    Provisioning a real VM — this can take ~30–90s…
+                  </span>
+                )}
                 <button
                   type="button"
                   className="btn btn-ghost"
@@ -351,6 +366,19 @@ function App() {
                         </td>
                         <td className="col-name">
                           <a href="#">{p.name}</a>
+                          <div className="ip-line">
+                            <span className="ip-label">IPv4</span>
+                            {p.ipAddress ? (
+                              <span className="ip-addr">{p.ipAddress}</span>
+                            ) : (
+                              <span className="ip-addr muted">
+                                {status === "STOPPED" ? "—" : "pending…"}
+                              </span>
+                            )}
+                          </div>
+                          {p.instanceName && (
+                            <div className="inst-name">{p.instanceName}</div>
+                          )}
                         </td>
                         <td>
                           <StatusBadge status={status} />
@@ -363,6 +391,21 @@ function App() {
                         <td className="col-date">{formatDate(p.createdAt)}</td>
                         <td className="col-actions">
                           <div className="row-actions">
+                            <button
+                              className="rbtn connect"
+                              onClick={() => setTerminalProject(p)}
+                              disabled={status !== "RUNNING"}
+                              title="Instance Connect (web terminal)"
+                            >
+                              Connect
+                            </button>
+                            <button
+                              className="rbtn"
+                              onClick={() => setMonitorProject(p)}
+                              title="Monitoring"
+                            >
+                              Monitor
+                            </button>
                             <button
                               className="rbtn"
                               onClick={() => changeStatus(p.id, "start")}
@@ -414,6 +457,19 @@ function App() {
           Stratus Console · connected to <code>{API_BASE_URL}</code>
         </footer>
       </div>
+
+      {terminalProject && (
+        <TerminalModal
+          project={terminalProject}
+          onClose={() => setTerminalProject(null)}
+        />
+      )}
+      {monitorProject && (
+        <MonitoringModal
+          project={monitorProject}
+          onClose={() => setMonitorProject(null)}
+        />
+      )}
     </div>
   );
 }

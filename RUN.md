@@ -1,177 +1,193 @@
-# How to Run — EC2-Replica (Stratus Console)
+# How to Run — EC2-Replica
 
-A local "mini-AWS": a React console that provisions **real Multipass VMs** on your
-laptop, backed by Express + Prisma + a Neon Postgres database.
+A small full-stack project:
 
-| Piece | Where it runs | Port |
-|-------|---------------|------|
-| **Backend** (Express + Prisma + Multipass orchestration) | **Your host laptop** | `5000` |
-| **Frontend** (React + Vite console) | Your host laptop | `5173` |
-| **Managed VMs** (`phase3-demo-xxxx`, …) | Multipass on the host | — |
-| Neon Postgres (state store) | Cloud | — |
-
-> ### ⚠️ The backend runs on the HOST — not inside a VM
-> The backend shells out to the host's `multipass` CLI to launch/stop/purge VMs.
-> A backend running *inside* a VM cannot reach the host's `multipassd` socket, so
-> it could never orchestrate anything. **Run `node server.js` on your laptop.**
->
-> The old `my-local-ec2` VM (with the `~/app` mount) was the Phase 1–2 home for the
-> backend. It is **no longer needed** to run the app — you can leave it stopped, or
-> keep it around as just another instance.
+- **Backend** — Node.js + Express + Prisma, talking to a **Neon** PostgreSQL database. Runs on port **5000**.
+- **Frontend** — React + Vite dashboard (axios), runs on port **5173**.
+- **"EC2" host** — the backend is meant to run inside a **multipass VM** (`my-local-ec2`), which acts as your local EC2 instance. The frontend runs on your host machine and talks to the VM over the network.
 
 ---
 
 ## Prerequisites
 
-- **Node.js 18+** on the host (`node -v`)
-- **Multipass** installed on the host — this is what actually creates the VMs:
-  ```bash
-  multipass version          # e.g. multipass 1.16.3
-  ```
-- A **`.env`** in the project root:
+- Node.js 18+ and npm (host has v24, VM has v22 — both fine)
+- A `.env` file in the project root with the Neon connection string:
   ```
   DATABASE_URL="postgresql://...neon.tech/neondb?sslmode=require&channel_binding=require"
   PORT=5000
   ```
+- (For the VM path) multipass with the `my-local-ec2` instance running, and the SSH key `my-ec2-key.pem`.
 
 ---
 
-## Run it (2 terminals)
+## Option A — Run everything on your host (simplest, for local dev)
 
-### Terminal 1 — Backend (on the host)
+### 1. Backend
 ```bash
 cd ~/projects/EC2-Replica
-npm install            # first time only
-npx prisma generate    # first time, and after any schema change
-npm start              # → "Server running on 5000 (0.0.0.0 …)"
+npm install          # first time only
+npx prisma generate  # first time / after schema changes
+npm start            # → "Server running on 5000 (0.0.0.0 ...)"
 ```
-
 Verify:
 ```bash
-curl http://localhost:5000/api/projects     # → []
+curl http://localhost:5000/api/projects   # → []
 ```
 
-### Terminal 2 — Frontend (on the host)
+### 2. Frontend
+Open a **second terminal**:
 ```bash
 cd ~/projects/EC2-Replica/frontend
-npm install            # first time only
-npm run dev            # → http://localhost:5173
+npm install          # first time only
+npm run dev          # → http://localhost:5173
 ```
 
-Open **http://localhost:5173**. The status pill should read **Healthy**.
-
-> The frontend targets `http://localhost:5000` (`API_BASE_URL` in
-> `frontend/src/api.js`). If you serve the UI from another machine, change it to
-> the host's LAN IP.
+> If you run this way, point the frontend at the host: set `API_BASE_URL` in
+> `frontend/src/api.js` to `http://localhost:5000`.
 
 ---
 
-## What the app actually does
+## Option B — Run the backend inside the multipass VM ("real EC2 replica")
 
-Launching an instance in the UI runs a **real** `multipass launch` on your laptop.
+This matches the intended architecture: backend on the VM, frontend on the host.
 
-| UI action | Shell command run on the host | Then |
-|-----------|-------------------------------|------|
-| **Launch instance** | `multipass launch --name <name> --cpus 1 --memory 1G` | reads the IPv4 via `multipass info … --format json`, saves `instanceName` + `ipAddress`, status `RUNNING` |
-| **Stop** | `multipass stop <name>` | status → `STOPPED` |
-| **Start** | `multipass start <name>` | refreshes IP, status → `RUNNING` |
-| **Terminate** | `multipass delete <name>` + `multipass purge` | deletes the DB row |
+### 1. Find / confirm the VM IP (it uses DHCP and can change!)
+```bash
+multipass list
+# Name           State     IPv4              Image
+# my-local-ec2   Running   10.176.164.96     Ubuntu 26.04 LTS
+```
+The frontend must point at this IP — `API_BASE_URL` in `frontend/src/api.js`
+is currently `http://10.176.164.96:5000`. Update it if the IP changed.
 
-Instance names are sanitized to valid hostnames with a unique suffix
-(e.g. `Phase3 Demo` → `phase3-demo-pba6`).
+### 2. Sync the latest code into the VM (from the host)
+`multipass mount/transfer/exec` are broken on this setup (SSH auth error),
+so sync over direct SSH with the key:
+```bash
+cd ~/projects/EC2-Replica
+KEY=my-ec2-key.pem
+VM=ubuntu@10.176.164.96
+RSH="ssh -i $KEY -o StrictHostKeyChecking=no"
 
-**These are slow.** A launch takes ~30–90s (VM boot); start ~30s; stop/terminate
-~5s. The frontend uses long per-operation timeouts (launch 5 min, actions 2.5 min)
-so the UI doesn't abort mid-operation.
+rsync -az -e "$RSH" server.js prisma.config.ts package.json package-lock.json .env $VM:~/app/
+rsync -az -e "$RSH" prisma/schema.prisma $VM:~/app/prisma/
+```
+
+### 3. Install deps + generate the Prisma client (inside the VM)
+```bash
+ssh -i my-ec2-key.pem ubuntu@10.176.164.96
+cd ~/app
+npm install
+npx prisma generate
+```
+
+### 4. Start the backend inside the VM
+
+**Recommended — survives SSH logout** (plain `npm start` gets killed by
+systemd-logind when you disconnect):
+```bash
+sudo systemd-run --unit=ec2-backend --working-directory=/home/ubuntu/app /usr/bin/node server.js
+```
+Manage it:
+```bash
+systemctl is-active ec2-backend        # check it's running
+sudo journalctl -u ec2-backend -f      # live logs
+sudo systemctl stop ec2-backend        # stop
+```
+
+**Simple alternative (dies when you close the terminal):**
+```bash
+cd ~/app && npm start
+```
+
+### 5. Verify from the host
+```bash
+curl http://10.176.164.96:5000/api/projects   # → [] (or your projects)
+```
+
+### 6. Start the frontend on the host
+```bash
+cd ~/projects/EC2-Replica/frontend
+npm run dev            # → http://localhost:5173
+```
+Open **http://localhost:5173** — the status badge should read **CONNECTED**.
 
 ---
 
 ## API reference
 
-| Method | Route | Body | Effect |
-|--------|-------|------|--------|
-| GET | `/` | — | health check |
-| GET | `/api/projects` | — | `200` list of instances |
-| POST | `/api/projects` | `{ name, description }` | **launches a real VM**, `201` |
-| POST | `/api/projects/:id/start` | — | `multipass start`, `200` |
-| POST | `/api/projects/:id/stop` | — | `multipass stop`, `200` |
-| DELETE | `/api/projects/:id` | — | `multipass delete` + `purge`, `200` |
-
----
-
-## Handy Multipass commands (host)
-
-```bash
-multipass list                       # all instances + IPs
-multipass info <name>                # details (state, ipv4, mounts)
-multipass shell <name>               # SSH into an instance
-multipass stop <name>                # stop
-multipass delete <name> && multipass purge   # destroy permanently
-multipass purge                      # wipe all deleted instances
-```
+| Method | Route             | Body                        | Returns                    |
+|--------|-------------------|-----------------------------|----------------------------|
+| GET    | `/`               | —                           | `{ message: "..." }`       |
+| GET    | `/api/projects`   | —                           | `200` array of projects    |
+| POST   | `/api/projects`   | `{ name, description }`      | `201` created project      |
 
 ---
 
 ## Troubleshooting
 
-### "Multipass CLI not found" (HTTP 503)
-The backend can't find `multipass`. Either you're running the backend **inside a VM**
-(it must run on the host), or `multipass` isn't on the service `PATH` — snap installs
-it to `/snap/bin`, which some environments omit. Point at it explicitly:
+- **`ERR_CONNECTION_REFUSED` / "Cannot reach the backend"**
+  - You're likely opening `localhost:5000` on the host while the server runs in the VM. Use the **VM IP** (`http://10.176.164.96:5000`), not `localhost`.
+  - The server may not be running. Check with `systemctl is-active ec2-backend` (or `curl http://10.176.164.96:5000/`).
+  - The VM IP may have changed (DHCP). Re-check with `multipass list` and update `frontend/src/api.js`.
+
+- **Backend keeps stopping after you log out of the VM**
+  - Don't use plain `npm start` over SSH — systemd-logind kills it on disconnect. Use the `systemd-run` command in step B4.
+
+- **`ETIMEDOUT` from Prisma / `/api/projects` fails intermittently**
+  - Neon auto-suspends when idle; the first request wakes it (~1–2s). The Neon adapter handles this — just retry.
+  - The VM needs outbound access to `*.neon.tech:443` (the adapter uses WebSockets over 443).
+
+- **After changing `prisma/schema.prisma`**
+  - Run `npx prisma generate` (and `npx prisma db push` to apply schema changes to Neon).
+
+---
+
+## Troubleshooting: Neon DB connection timeout inside the VM (IPv6 / DNS)
+
+**Symptom.** The API works perfectly on the host, but inside the multipass VM
+every database call fails. `GET`/`POST /api/projects` return `500`
+(`{"error":"Failed to fetch projects"}` / `{"error":"Failed to create project"}`),
+and the server logs show a WebSocket `ETIMEDOUT` / `ENETUNREACH` connecting to
+`wss://...neon.tech:443`.
+
+**Root cause.** The VM resolves the Neon hostname to **IPv6 (AAAA) records**
+(e.g. `2600:1f10:...`), but multipass VMs have **no IPv6 default route**. Node's
+default DNS ordering hands those IPv6 addresses to the Neon serverless driver
+first, so the connection hangs until it times out. Neon itself is healthy — the
+problem is purely IPv6 egress from the VM.
+
+Confirm it inside the VM:
 ```bash
-MULTIPASS_BIN=/snap/bin/multipass npm start
-```
-
-### Neon DB connection timeout / IPv6 issue
-**Symptom.** All DB calls fail — `GET`/`POST /api/projects` return `500`
-(`{"error":"Failed to fetch projects"}`), and logs show a WebSocket
-`ETIMEDOUT` / `ENETUNREACH` to `wss://...neon.tech:443`.
-
-**Root cause.** The host/VM resolves the Neon hostname to **IPv6 (AAAA)** records
-(`2600:1f10:...`) but has **no IPv6 route**, so the Neon driver hangs until timeout.
-Neon itself is fine.
-
-Confirm:
-```bash
-getent hosts ep-<your-endpoint>.aws.neon.tech   # only 2600:... (IPv6)
+getent hosts ep-<your-endpoint>.aws.neon.tech   # returns only 2600:... (IPv6)
 ip -6 route show default                          # empty → no IPv6 route
 ```
 
-**The fix** (already applied) — force Node to prefer IPv4, at the top of `server.js`:
+**The fix.** Force Node to prefer IPv4 when resolving hostnames. Add this at the
+very top of `server.js` (right after `require("dotenv/config")`, before any
+Prisma/Neon code):
 ```js
 require("node:dns").setDefaultResultOrder("ipv4first");
 ```
-Equivalent without a code change:
+This makes the Neon driver connect over IPv4, which the VM *can* route. It is a
+no-op on the host (which has working IPv4/IPv6), so it is safe everywhere.
+
+After adding it, restart the backend in the VM:
 ```bash
-NODE_OPTIONS="--dns-result-order=ipv4first" node server.js
+sudo systemctl restart ec2-backend        # if running as the systemd service
+# then verify from the host:
+curl http://<VM_IP>:5000/api/projects       # → 200 [] instead of 500
 ```
 
-### Occasional `500` with an empty error message
-A known **transient Neon WebSocket flake** (the pooler drops a connection). It
-succeeds on retry — just click the action again. Neon also **auto-suspends when
-idle**, so the first request after a pause takes ~1–2s to wake it.
-
-### `ERR_CONNECTION_REFUSED` in the browser
-Nothing is listening. Start the backend (`npm start` in the project root) and the
-frontend (`npm run dev` in `frontend/`). Remember the backend is on the **host** now,
-so `http://localhost:5000` is correct — not a VM IP.
-
-### After changing `prisma/schema.prisma`
-```bash
-npx prisma db push       # add --accept-data-loss if it warns about a new constraint
-npx prisma generate
-```
-Then restart the backend.
+> Equivalent alternative (no code change): start Node with
+> `NODE_OPTIONS="--dns-result-order=ipv4first" node server.js`. The in-code
+> version is preferred so the fix travels with the app.
 
 ---
 
 ## Notes / architecture
 
-- **Prisma 7** with the `prisma-client-js` generator and the **`@prisma/adapter-neon`**
-  driver adapter (Prisma 7 requires an adapter; the Neon one handles the pooler and
-  wake-from-idle).
-- The backend binds `0.0.0.0:5000` so other machines on your LAN can reach it.
-- VM orchestration uses `child_process.execFile` (no shell → no injection), with
-  timeouts and a `/snap/bin/multipass` fallback.
-- Private keys (`*.pem`) are gitignored. They were previously committed — rotate the
-  key if this repo was ever pushed.
+- This is **Prisma 7**: the generator is `prisma-client-js` and the client is
+  built with a **driver adapter** (`@prisma/adapter-neon`) — see `server.js`.
+- The backend binds to `0.0.0.0:5000` so the host (and other machines) can reach the VM.
+- The VM's app lives at `/home/ubuntu/app` and is kept in sync from the host project folder.

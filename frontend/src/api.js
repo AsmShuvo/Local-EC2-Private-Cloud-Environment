@@ -1,11 +1,33 @@
 import axios from "axios";
 
-// The backend now runs ON THE HOST (it shells out to the host's Multipass CLI
-// to manage real VMs — a VM-resident backend can't reach the host's multipassd).
-// If you run the frontend on a different machine, point this at the host's LAN IP.
-export const API_BASE_URL = "http://localhost:5000";
+// ---------------------------------------------------------------------------
+// Where is the backend?
+//
+// The backend runs ON THE HOST laptop (it shells out to the host's Multipass CLI
+// to manage real VMs). To let OTHER DEVICES on the same Wi-Fi use it, the API
+// must be reached at the laptop's LAN IP, not "localhost" — because on a phone,
+// "localhost" means the phone itself.
+//
+// By default we AUTO-DETECT: we reuse whatever host you loaded the page from.
+//   - open http://localhost:5173        -> API = http://localhost:5000
+//   - open http://192.168.0.107:5173    -> API = http://192.168.0.107:5000
+// This means it "just works" from any device with no edits.
+//
+// If you'd rather hard-code it, put your laptop's LAN IP in LAN_IP below.
+// Find it with:  hostname -I | awk '{print $1}'
+// ---------------------------------------------------------------------------
+const LAN_IP = null; // e.g. "192.168.0.107"  (leave null to auto-detect)
+
+const API_PORT = 5000;
+const API_HOST =
+  LAN_IP ||
+  (typeof window !== "undefined" ? window.location.hostname : "localhost");
+
+export const API_BASE_URL = `http://${API_HOST}:${API_PORT}`;
 
 // WebSocket base for the Instance Connect terminal (http -> ws, https -> wss).
+// Derived from API_BASE_URL, so the xterm.js terminal automatically follows the
+// same LAN IP and works from other devices.
 export const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
 
 // Real VM operations are slow, so use generous per-operation timeouts.

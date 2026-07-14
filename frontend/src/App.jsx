@@ -389,6 +389,9 @@ function App() {
                           <div className="type-specs">
                             {(p.cpu ?? 1)} vCPU · {p.memory || "1G"} RAM · {p.disk || "5G"} disk
                           </div>
+                          <span className="os-badge">
+                            {p.os === "debian-12" ? "Debian 12" : "Ubuntu"}
+                          </span>
                         </td>
                         <td>
                           <StatusBadge status={status} />

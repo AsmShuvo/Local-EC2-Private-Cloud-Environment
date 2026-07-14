@@ -13,18 +13,19 @@ const blankRule = () => ({ protocol: "TCP", port: "22", sourceIp: "0.0.0.0/0" })
 /**
  * EC2-style launch wizard.
  *  1. Name & description
- *  2. Instance type (vCPU / RAM / disk)
- *  3. Key pair (login)   -> existing | create new | proceed without
- *  4. Network settings   -> create new security group | select existing
- *
- * Note: there is deliberately NO OS selector. Multipass only boots Ubuntu, so
- * offering a choice would be a lie. The default Ubuntu LTS image is always used.
+ *  2. Operating system  -> Ubuntu (native) | Debian 12 (cloud-image URL)
+ *  3. Instance type (vCPU / RAM / disk)
+ *  4. Key pair (login)  -> existing | create new | proceed without
+ *  5. Network settings  -> create new security group | select existing
  */
 export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
   // Step 1
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  // Step 2
+  // Step 2 — operating system
+  const [images, setImages] = useState([]);
+  const [os, setOs] = useState("ubuntu");
+  // Step 3
   const [instanceType, setInstanceType] = useState("t2.micro");
   // Step 4 — key pair
   const [keyPairs, setKeyPairs] = useState([]);
@@ -44,11 +45,13 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
   const [error, setError] = useState("");
 
   const loadLookups = useCallback(async () => {
-    const [kp, sg, who] = await Promise.all([
+    const [img, kp, sg, who] = await Promise.all([
+      api.get("/api/images").catch(() => ({ data: [] })),
       api.get("/api/key-pairs").catch(() => ({ data: [] })),
       api.get("/api/security-groups").catch(() => ({ data: [] })),
       api.get("/api/security-groups/whoami").catch(() => ({ data: {} })),
     ]);
+    setImages(img.data);
     setKeyPairs(kp.data);
     setGroups(sg.data);
     setMyIp(who.data?.ip || "");
@@ -97,6 +100,7 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
       const payload = {
         name: name.trim(),
         description: description.trim(),
+        os,
         instanceType: spec.name,
         cpu: spec.cpu,
         memory: spec.memory,
@@ -123,6 +127,7 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
   };
 
   const selectedKp = keyPairs.find((k) => String(k.id) === String(keyPairId));
+  const selectedImage = images.find((i) => i.id === os);
 
   return (
     <div className="modal-overlay" onMouseDown={() => !submitting && onClose()}>
@@ -185,10 +190,45 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
           </div>
 
 
-          {/* 2 — Instance type ----------------------------------------- */}
+          {/* 2 — Operating system --------------------------------------- */}
           <div className="wz-section">
             <div className="wz-title">
-              <span className="wz-num">2</span> Instance type
+              <span className="wz-num">2</span> Operating system
+            </div>
+            <div className="os-grid">
+              {images.map((img) => (
+                <label
+                  key={img.id}
+                  className={`os-card ${os === img.id ? "is-on" : ""}`}
+                >
+                  <input
+                    type="radio"
+                    name="os"
+                    value={img.id}
+                    checked={os === img.id}
+                    onChange={() => setOs(img.id)}
+                    disabled={submitting}
+                  />
+                  <span className="os-body">
+                    <span className="os-name">{img.name}</span>
+                    <span className="os-desc">{img.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {selectedImage && (
+              <span className="field-hint">
+                Minimum disk for {selectedImage.name}:{" "}
+                <strong>{selectedImage.minDisk} GB</strong>. Every instance type
+                below satisfies it.
+              </span>
+            )}
+          </div>
+
+          {/* 3 — Instance type ----------------------------------------- */}
+          <div className="wz-section">
+            <div className="wz-title">
+              <span className="wz-num">3</span> Instance type
             </div>
             <select
               className="input select"
@@ -204,10 +244,10 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
             </select>
           </div>
 
-          {/* 3 — Key pair ---------------------------------------------- */}
+          {/* 4 — Key pair ---------------------------------------------- */}
           <div className="wz-section">
             <div className="wz-title">
-              <span className="wz-num">3</span> Key pair (login)
+              <span className="wz-num">4</span> Key pair (login)
             </div>
 
             <div className="radio-row">
@@ -294,10 +334,10 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
             )}
           </div>
 
-          {/* 4 — Network / security groups ------------------------------ */}
+          {/* 5 — Network / security groups ------------------------------ */}
           <div className="wz-section">
             <div className="wz-title">
-              <span className="wz-num">4</span> Network settings
+              <span className="wz-num">5</span> Network settings
               <span className="wz-sub">(firewall / security groups)</span>
             </div>
 

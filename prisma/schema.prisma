@@ -21,6 +21,7 @@ model CloudProject {
   memory       String   @default("1G")
   instanceType String   @default("t2.micro")
   disk         String   @default("5G")
+  os           String   @default("ubuntu") // which image the VM was built from
   createdAt    DateTime @default(now())
 
   // The reusable key pair this instance was launched with (AWS: an instance

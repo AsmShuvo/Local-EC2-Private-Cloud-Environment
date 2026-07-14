@@ -1259,3 +1259,25 @@ table.sg-rules { width: 100%; border-collapse: collapse; font-size: 13px; }
   border-top: 1px solid var(--border); margin-top: 4px;
 }
 .wizard-foot .launch-hint { margin-right: auto; }
+
+/* ---------- OS picker (launch wizard) ---------- */
+.os-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.os-card {
+  display: flex; align-items: flex-start; gap: 9px;
+  border: 1.5px solid var(--border-strong); border-radius: 10px;
+  padding: 12px 13px; cursor: pointer; background: #fbfbfe;
+  transition: border-color .12s, background .12s;
+}
+.os-card:hover { border-color: var(--brand); }
+.os-card.is-on { border-color: var(--brand); background: var(--brand-soft); }
+.os-card input { margin-top: 3px; }
+.os-body { display: flex; flex-direction: column; gap: 2px; }
+.os-name { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.os-desc { font-size: 11.5px; color: var(--text-dim); }
+
+/* OS badge in the instances table */
+.os-badge {
+  display: inline-block; font-size: 10.5px; font-weight: 700;
+  color: var(--text-dim); background: #eef0f7; border: 1px solid var(--border);
+  border-radius: 5px; padding: 1px 6px; margin-top: 4px;
+}

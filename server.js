@@ -23,7 +23,8 @@ const securityGroupRoutes = require("./src/security/routes");
 const instanceSecurityRoutes = require("./src/security/instanceRoutes");
 const { enforceInbound, checkWsInbound, SSH_PORT } = require("./src/security/middleware");
 
-// Reusable key pairs.
+// OS image catalog ("AMI") + reusable key pairs.
+const { listImages, resolveImage } = require("./src/images");
 const keypairs = require("./src/keypairs");
 const keypairRoutes = require("./src/keypairRoutes");
 
@@ -43,6 +44,9 @@ app.use("/api/security-groups", securityGroupRoutes);
 app.use("/api/projects", instanceSecurityRoutes);
 // Reusable key pairs.
 app.use("/api/key-pairs", keypairRoutes);
+
+// The OS image catalog the launch wizard renders (our "AMI" list).
+app.get("/api/images", (req, res) => res.status(200).json(listImages()));
 
 // ---------------------------------------------------------------------------
 // Multipass orchestration
@@ -246,13 +250,14 @@ app.get("/api/instance-types", (req, res) => {
 // Launch with the public key injected via cloud-init user-data, piped over
 // STDIN (`--cloud-init -`). Using stdin avoids the snap-confinement problem
 // where multipassd cannot read a temp file (e.g. under /tmp).
-async function launchWithKey(instanceName, openssh, { cpu, memory, disk }) {
+async function launchWithKey(instanceName, openssh, { cpu, memory, disk, launchArg }) {
   const bin = await ensureMultipassBin();
-  // No image argument: Multipass boots its default Ubuntu LTS image. We
-  // deliberately do NOT support choosing an OS — Multipass can only run Ubuntu,
-  // and anything else would require swapping in a different hypervisor driver.
-  const args = [
-    "launch",
+  // The image is POSITIONAL and must come immediately after "launch". It may be
+  // a catalog alias OR a cloud-image URL (that's how we boot Debian). Omitting
+  // it entirely makes Multipass use its default Ubuntu LTS image.
+  const args = ["launch"];
+  if (launchArg) args.push(String(launchArg));
+  args.push(
     "--name",
     instanceName,
     "--cpus",
@@ -260,8 +265,8 @@ async function launchWithKey(instanceName, openssh, { cpu, memory, disk }) {
     "--memory",
     String(memory),
     "--disk",
-    String(disk),
-  ];
+    String(disk)
+  );
 
   // "Proceed without a key pair": no cloud-init at all. The VM still works and
   // the browser terminal still connects (that goes through Multipass, not SSH),
@@ -345,6 +350,10 @@ app.post("/api/projects", async (req, res) => {
   // Resolve the requested instance type into concrete, validated specs.
   const { instanceType, cpu, memory, disk } = resolveSpec(req.body);
 
+  // Resolve the OS image. Unknown ids are rejected, never silently downgraded.
+  const { image, error: imageError } = resolveImage(req.body?.os);
+  if (imageError) return res.status(400).json({ error: imageError });
+
   // Security groups chosen in the launch wizard (like AWS: attached AT creation,
   // not bolted on afterwards).
   const rawSgIds = req.body?.securityGroupIds ?? [];
@@ -392,7 +401,12 @@ app.post("/api/projects", async (req, res) => {
   try {
     // Launch is slow (image boot) — allow up to 5 minutes. When a key pair is
     // used, its PUBLIC key is baked into authorized_keys via cloud-init.
-    await launchWithKey(instanceName, keySel.openssh, { cpu, memory, disk });
+    await launchWithKey(instanceName, keySel.openssh, {
+      cpu,
+      memory,
+      disk,
+      launchArg: image.launchArg, // null for Ubuntu, a cloud-image URL for Debian
+    });
 
     const ipAddress = await getInstanceIp(instanceName);
 
@@ -410,6 +424,7 @@ app.post("/api/projects", async (req, res) => {
           memory,
           disk,
           instanceType,
+          os: image.id,
           // Attach the selected groups in the SAME write — the instance is never
           // live for even an instant without its firewall policy applied.
           ...(securityGroupIds.length

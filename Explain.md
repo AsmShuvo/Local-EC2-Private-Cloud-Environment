@@ -308,3 +308,9 @@ demonstrates hypervisor orchestration, asymmetric-key security, cloud-init
 provisioning, PTY/WebSocket streaming, time-series monitoring, and a stateful
 firewall with a many-to-many policy model — the same building blocks that AWS EC2
 is made of, reproduced at laptop scale.
+
+- creATE INSTNCE  btn
+- securityu group mount
+- how vm is created
+- key pair dekha jabe
+- multiple OS 

@@ -1210,3 +1210,75 @@ table.sg-rules { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .panel-head-actions { display: flex; align-items: center; gap: 10px; }
 .btn.sm { padding: 7px 12px; font-size: 15px; line-height: 1; }
+
+/* ---------- EC2-style launch wizard ---------- */
+.wizard-modal { max-width: 720px; }
+.wizard-body { overflow-y: auto; padding: 20px 22px 0; }
+.wz-section {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 18px; margin-bottom: 18px;
+}
+.wz-section:last-of-type { border-bottom: none; }
+.wz-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 15px; font-weight: 800; color: var(--text); margin-bottom: 14px;
+}
+.wz-num {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--brand); color: #fff;
+  font-size: 12px; font-weight: 800;
+  display: grid; place-items: center; flex-shrink: 0;
+}
+.wz-sub { font-size: 12px; font-weight: 500; color: var(--text-faint); }
+
+/* AMI picker */
+.ami-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ami-card {
+  display: flex; align-items: flex-start; gap: 9px;
+  border: 1.5px solid var(--border-strong); border-radius: 10px;
+  padding: 11px 13px; cursor: pointer; background: #fbfbfe;
+  transition: border-color .12s, background .12s;
+}
+.ami-card:hover:not(.is-disabled) { border-color: var(--brand); }
+.ami-card.is-on { border-color: var(--brand); background: var(--brand-soft); }
+.ami-card.is-disabled { opacity: .55; cursor: not-allowed; background: #f4f5f9; }
+.ami-card input { margin-top: 3px; }
+.ami-body { display: flex; flex-direction: column; gap: 2px; }
+.ami-name {
+  font-size: 13.5px; font-weight: 700; color: var(--text);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.ami-soon {
+  font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .4px;
+  color: #92660a; background: #fdf3d9; border: 1px solid #f0dca6;
+  border-radius: 4px; padding: 1px 5px;
+}
+.ami-desc { font-size: 11.5px; color: var(--text-dim); }
+
+/* radio rows (key pair / SG mode) */
+.radio-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.radio-opt {
+  display: flex; align-items: center; gap: 9px;
+  border: 1.5px solid var(--border-strong); border-radius: 9px;
+  padding: 9px 12px; cursor: pointer; font-size: 13.5px; color: var(--text);
+  transition: border-color .12s, background .12s;
+}
+.radio-opt:hover { border-color: var(--brand); }
+.radio-opt.is-on { border-color: var(--brand); background: var(--brand-soft); font-weight: 600; }
+.radio-opt em { color: var(--text-faint); font-style: normal; font-size: 12px; }
+.mono-hint { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.wz-warn {
+  font-size: 12.5px; line-height: 1.55; color: #8a6d2a;
+  background: #fff8ec; border: 1px solid #f0dca6;
+  border-radius: 10px; padding: 11px 13px;
+}
+.wz-warn strong { display: block; color: #7a5a08; margin-bottom: 2px; }
+.wz-rule { grid-template-columns: 0.9fr 0.7fr 1.7fr 34px; }
+
+.wizard-foot {
+  position: sticky; bottom: 0; z-index: 2;
+  display: flex; justify-content: flex-end; align-items: center; gap: 10px;
+  padding: 14px 0 18px; background: var(--panel);
+  border-top: 1px solid var(--border); margin-top: 4px;
+}
+.wizard-foot .launch-hint { margin-right: auto; }

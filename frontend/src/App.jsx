@@ -3,6 +3,7 @@ import api, { API_BASE_URL, TIMEOUTS, describeError } from "./api";
 import TerminalModal from "./TerminalModal";
 import MonitoringModal from "./MonitoringModal";
 import KeyModal from "./KeyModal";
+import LaunchWizard from "./LaunchWizard";
 import SecurityGroupsPanel from "./SecurityGroupsPanel";
 import InstanceSecurityModal from "./InstanceSecurityModal";
 import "./App.css";
@@ -26,13 +27,6 @@ const safeFileName = (n) =>
     .replace(/[^a-zA-Z0-9-_]+/g, "-")
     .replace(/^-+|-+$/g, "") || "instance";
 
-// AWS-style instance types. Mirrors the server-side catalog (server is authoritative).
-const INSTANCE_TYPES = [
-  { name: "t2.micro", cpu: 1, memory: "1G", label: "1 vCPU · 1 GB RAM" },
-  { name: "t2.small", cpu: 1, memory: "2G", label: "1 vCPU · 2 GB RAM" },
-  { name: "t2.medium", cpu: 2, memory: "4G", label: "2 vCPU · 4 GB RAM" },
-];
-
 function StatusBadge({ status }) {
   const s = (status || "RUNNING").toUpperCase();
   const cls = s === "RUNNING" ? "running" : "stopped";
@@ -46,12 +40,6 @@ function StatusBadge({ status }) {
 
 function App() {
   const [projects, setProjects] = useState([]);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [instanceType, setInstanceType] = useState("t2.micro");
-  // Security groups chosen in the launch wizard (attached at creation, like AWS).
-  const [availableGroups, setAvailableGroups] = useState([]);
-  const [launchSgIds, setLaunchSgIds] = useState([]);
   const [showLaunch, setShowLaunch] = useState(false); // launch wizard modal
 
   const [loading, setLoading] = useState(true);
@@ -88,71 +76,23 @@ function App() {
     fetchProjects();
   }, [fetchProjects]);
 
-  // Load the security groups the launch wizard can offer.
-  const fetchGroups = useCallback(async () => {
-    try {
-      const { data } = await api.get("/api/security-groups");
-      setAvailableGroups(Array.isArray(data) ? data : []);
-    } catch {
-      /* non-fatal: the wizard just shows no groups */
-    }
-  }, []);
 
-  useEffect(() => {
-    fetchGroups();
-  }, [fetchGroups]);
+  // Called by the launch wizard when a VM has been provisioned.
+  const handleLaunched = (project) => {
+    setProjects((prev) => [project, ...prev]);
+    setOnline(true);
+  };
 
-  const toggleLaunchSg = (id) =>
-    setLaunchSgIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!name.trim() || submitting) return;
-    setSubmitting(true);
-    setError("");
-    try {
-      const spec =
-        INSTANCE_TYPES.find((t) => t.name === instanceType) || INSTANCE_TYPES[0];
-      const { data } = await api.post(
-        "/api/projects",
-        {
-          name: name.trim(),
-          description: description.trim(),
-          instanceType: spec.name,
-          cpu: spec.cpu,
-          memory: spec.memory,
-          securityGroupIds: launchSgIds,
-        },
-        { timeout: TIMEOUTS.launch }
-      );
-      // The private key comes back exactly once — download it, never store it.
-      const { privateKey, ...project } = data;
-      setProjects((prev) => [project, ...prev]);
-      setName("");
-      setDescription("");
-      setLaunchSgIds([]);
-      setShowLaunch(false);
-      setOnline(true);
-
-      if (privateKey) {
-        const filename = `${safeFileName(project.name)}-key.pem`;
-        downloadTextFile(filename, privateKey);
-        setKeyModal({
-          filename,
-          keyName: project.keyName,
-          instanceName: project.instanceName,
-          ipAddress: project.ipAddress,
-        });
-      }
-    } catch (err) {
-      console.error(err);
-      setError(describeError(err));
-      setOnline(false);
-    } finally {
-      setSubmitting(false);
-    }
+  // Only fires when a NEW key pair was generated — download it once.
+  const handleKeyIssued = (project, privateKey) => {
+    const filename = `${safeFileName(project.keyName || project.name)}.pem`;
+    downloadTextFile(filename, privateKey);
+    setKeyModal({
+      filename,
+      keyName: project.keyName,
+      instanceName: project.instanceName,
+      ipAddress: project.ipAddress,
+    });
   };
 
   const setBusy = (id, action) =>
@@ -321,172 +261,6 @@ function App() {
               {error}
             </span>
             <button onClick={fetchProjects}>Retry</button>
-          </div>
-        )}
-
-        {/* Launch wizard — opened by the "Launch instance" button */}
-        {showLaunch && (
-          <div
-            className="modal-overlay"
-            onMouseDown={() => !submitting && setShowLaunch(false)}
-          >
-            <section
-              className="modal launch-modal"
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <div className="modal-head">
-                <div className="htitle">
-                  <span className="accent-bar" />
-                  <div>
-                    <h2>Launch instance</h2>
-                    <p className="hdesc">
-                      Configure and provision a new virtual machine.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  className="modal-close"
-                  onClick={() => setShowLaunch(false)}
-                  disabled={submitting}
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="launch-modal-body">
-            <form onSubmit={handleSubmit}>
-              <div className="form-row">
-                <label htmlFor="p-name">Instance name</label>
-                <input
-                  id="p-name"
-                  className="input"
-                  type="text"
-                  placeholder="e.g. edge-render-node"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  disabled={submitting}
-                />
-              </div>
-              <div className="form-row">
-                <label htmlFor="p-desc">
-                  Description <span className="opt">— optional</span>
-                </label>
-                <textarea
-                  id="p-desc"
-                  className="textarea"
-                  placeholder="What is this instance for?"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  disabled={submitting}
-                />
-              </div>
-              <div className="form-row">
-                <label htmlFor="p-type">Instance type</label>
-                <select
-                  id="p-type"
-                  className="input select"
-                  value={instanceType}
-                  onChange={(e) => setInstanceType(e.target.value)}
-                  disabled={submitting}
-                >
-                  {INSTANCE_TYPES.map((t) => (
-                    <option key={t.name} value={t.name}>
-                      {t.name} — {t.label}
-                    </option>
-                  ))}
-                </select>
-                <span className="field-hint">
-                  Sets the real vCPU and memory the VM is launched with.
-                </span>
-              </div>
-
-              <div className="form-row">
-                <label>
-                  Security groups <span className="opt">— firewall applied at launch</span>
-                </label>
-                {availableGroups.length === 0 ? (
-                  <div className="sg-launch-empty">
-                    No security groups yet. Create one in the{" "}
-                    <button
-                      type="button"
-                      className="mini-link"
-                      onClick={() => setTab("security")}
-                    >
-                      Security Groups
-                    </button>{" "}
-                    tab. Launching with none leaves the instance unrestricted.
-                  </div>
-                ) : (
-                  <div className="sg-launch-picker">
-                    {availableGroups.map((g) => (
-                      <label
-                        key={g.id}
-                        className={`sg-launch-option ${
-                          launchSgIds.includes(g.id) ? "is-on" : ""
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={launchSgIds.includes(g.id)}
-                          onChange={() => toggleLaunchSg(g.id)}
-                          disabled={submitting}
-                        />
-                        <span>
-                          <span className="sg-launch-name">🛡️ {g.name}</span>
-                          <span className="sg-launch-rules">
-                            {g.inboundRules.length === 0
-                              ? "no inbound rules — denies everything"
-                              : g.inboundRules
-                                  .map(
-                                    (r) =>
-                                      `${r.protocol}/${
-                                        r.fromPort == null ? "all" : r.fromPort
-                                      } ← ${r.sourceIp}`
-                                  )
-                                  .join(" · ")}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-                <span className="field-hint">
-                  {launchSgIds.length === 0
-                    ? "None selected — the instance will accept traffic from anyone."
-                    : `${launchSgIds.length} group(s) selected. Only matching traffic will be allowed.`}
-                </span>
-              </div>
-
-              <div className="form-actions launch-foot">
-                {submitting && (
-                  <span className="launch-hint">
-                    Provisioning a real VM — this can take ~30–90s…
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setShowLaunch(false)}
-                  disabled={submitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submitting || !name.trim()}
-                >
-                  {submitting ? (
-                    <>
-                      <span className="spinner" /> Launching…
-                    </>
-                  ) : (
-                    "Launch instance"
-                  )}
-                </button>
-              </div>
-            </form>
-              </div>
-            </section>
           </div>
         )}
 
@@ -716,6 +490,13 @@ function App() {
           onClose={() => setMonitorProject(null)}
         />
       )}
+      {showLaunch && (
+        <LaunchWizard
+          onClose={() => setShowLaunch(false)}
+          onLaunched={handleLaunched}
+          onKeyIssued={handleKeyIssued}
+        />
+      )}
       {keyModal && (
         <KeyModal info={keyModal} onClose={() => setKeyModal(null)} />
       )}
@@ -723,10 +504,7 @@ function App() {
         <InstanceSecurityModal
           project={securityProject}
           onClose={() => setSecurityProject(null)}
-          onSaved={() => {
-            fetchProjects();
-            fetchGroups();
-          }}
+          onSaved={fetchProjects}
         />
       )}
     </div>

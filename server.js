@@ -23,6 +23,11 @@ const securityGroupRoutes = require("./src/security/routes");
 const instanceSecurityRoutes = require("./src/security/instanceRoutes");
 const { enforceInbound, checkWsInbound, SSH_PORT } = require("./src/security/middleware");
 
+// OS image catalog ("AMI") + reusable key pairs.
+const { listImages, resolveImage } = require("./src/images");
+const keypairs = require("./src/keypairs");
+const keypairRoutes = require("./src/keypairRoutes");
+
 const execFileP = promisify(execFile);
 
 const app = express();
@@ -37,6 +42,11 @@ app.use(express.json());
 app.use("/api/security-groups", securityGroupRoutes);
 // Instance <-> group binding (many-to-many).
 app.use("/api/projects", instanceSecurityRoutes);
+// Reusable key pairs.
+app.use("/api/key-pairs", keypairRoutes);
+
+// The OS image catalog the launch wizard renders (our "AMI" list).
+app.get("/api/images", (req, res) => res.status(200).json(listImages()));
 
 // ---------------------------------------------------------------------------
 // Multipass orchestration
@@ -236,30 +246,42 @@ app.get("/api/instance-types", (req, res) => {
 // Launch with the public key injected via cloud-init user-data, piped over
 // STDIN (`--cloud-init -`). Using stdin avoids the snap-confinement problem
 // where multipassd cannot read a temp file (e.g. under /tmp).
-async function launchWithKey(instanceName, openssh, { cpu, memory }) {
-  const cloudInit = `#cloud-config\nssh_authorized_keys:\n  - ${openssh}\n`;
+async function launchWithKey(instanceName, openssh, { cpu, memory, imageAlias }) {
   const bin = await ensureMultipassBin();
-  const args = [
-    "launch",
+  // `multipass launch <image>` — the image alias is POSITIONAL and must come
+  // first. Omitting it silently boots the default LTS, which is how the OS
+  // selection was previously being ignored.
+  const args = ["launch"];
+  if (imageAlias) args.push(String(imageAlias));
+  args.push(
     "--name",
     instanceName,
     "--cpus",
     String(cpu),
     "--memory",
-    String(memory),
-    "--cloud-init",
-    "-",
-  ];
+    String(memory)
+  );
+
+  // "Proceed without a key pair": no cloud-init at all. The VM still works and
+  // the browser terminal still connects (that goes through Multipass, not SSH),
+  // but `ssh -i key.pem` will never authenticate against it.
+  const cloudInit = openssh
+    ? `#cloud-config\nssh_authorized_keys:\n  - ${openssh}\n`
+    : null;
+  if (cloudInit) args.push("--cloud-init", "-");
 
   await new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      const e = new Error("multipass launch timed out after 300s");
+      const e = new Error(
+        "multipass launch timed out after 10 minutes — the OS image may still be downloading. " +
+          "Pre-fetch it with: multipass launch <image> --name warmup && multipass delete --purge warmup"
+      );
       e.kind = "TIMEOUT";
       reject(e);
-    }, 300000);
+    }, 600000);
 
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", (err) => {
@@ -281,7 +303,7 @@ async function launchWithKey(instanceName, openssh, { cpu, memory }) {
       reject(e);
     });
 
-    child.stdin.write(cloudInit);
+    if (cloudInit) child.stdin.write(cloudInit);
     child.stdin.end();
   });
 }
@@ -319,9 +341,13 @@ app.post("/api/projects", async (req, res) => {
   }
 
   const instanceName = uniqueInstanceName(name);
-  const keyName = `${instanceName}-key`;
   // Resolve the requested instance type into concrete, validated specs.
   const { instanceType, cpu, memory } = resolveSpec(req.body);
+
+  // Resolve the OS image ("AMI"). Unsupported images are rejected, never
+  // silently downgraded to Ubuntu.
+  const { image, error: imageError } = resolveImage(req.body?.os);
+  if (imageError) return res.status(400).json({ error: imageError });
 
   // Security groups chosen in the launch wizard (like AWS: attached AT creation,
   // not bolted on afterwards).
@@ -352,13 +378,29 @@ app.post("/api/projects", async (req, res) => {
     }
   }
 
+  // Resolve the key-pair choice: create a new one, reuse a stored one, or none.
+  let keySel;
   try {
-    // Fresh, unique SSH key pair for this instance (private key returned once).
-    const { privateKeyPem, openssh } = generateKeyPair(keyName);
+    keySel = await keypairs.resolveForLaunch(
+      {
+        mode: req.body?.keyPairMode,
+        keyPairId: req.body?.keyPairId,
+        keyPairName: req.body?.keyPairName,
+      },
+      `${instanceName}-key`
+    );
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
 
-    // Launch is slow (image boot) — allow up to 5 minutes. The public key is
-    // baked into the VM's authorized_keys via cloud-init.
-    await launchWithKey(instanceName, openssh, { cpu, memory });
+  try {
+    // Launch is slow (image boot) — allow up to 5 minutes. When a key pair is
+    // used, its PUBLIC key is baked into authorized_keys via cloud-init.
+    await launchWithKey(instanceName, keySel.openssh, {
+      cpu,
+      memory,
+      imageAlias: image.multipassAlias,
+    });
 
     const ipAddress = await getInstanceIp(instanceName);
 
@@ -370,7 +412,9 @@ app.post("/api/projects", async (req, res) => {
           status: "RUNNING",
           instanceName,
           ipAddress,
-          keyName,
+          keyName: keySel.keyName,
+          keyPairId: keySel.keyPairId,
+          os: image.id,
           cpu,
           memory,
           instanceType,
@@ -380,11 +424,15 @@ app.post("/api/projects", async (req, res) => {
             ? { securityGroups: { connect: securityGroupIds.map((id) => ({ id })) } }
             : {}),
         },
-        include: { securityGroups: { select: { id: true, name: true } } },
+        include: {
+          securityGroups: { select: { id: true, name: true } },
+          keyPair: { select: { id: true, name: true, fingerprint: true } },
+        },
       })
     );
-    // The private key is sent EXACTLY ONCE and never persisted server-side.
-    res.status(201).json({ ...project, privateKey: privateKeyPem });
+    // The private key is sent EXACTLY ONCE and only when we just generated it.
+    // Reusing an existing key pair returns nothing — the user already has it.
+    res.status(201).json({ ...project, privateKey: keySel.privateKey });
   } catch (err) {
     console.error("Error launching VM:", err);
     // Best-effort cleanup so a half-launched VM does not linger on the host.

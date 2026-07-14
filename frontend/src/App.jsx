@@ -387,7 +387,7 @@ function App() {
                             {p.instanceType || "t2.micro"}
                           </span>
                           <div className="type-specs">
-                            {(p.cpu ?? 1)} vCPU · {p.memory || "1G"} RAM
+                            {(p.cpu ?? 1)} vCPU · {p.memory || "1G"} RAM · {p.disk || "5G"} disk
                           </div>
                         </td>
                         <td>

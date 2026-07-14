@@ -23,8 +23,7 @@ const securityGroupRoutes = require("./src/security/routes");
 const instanceSecurityRoutes = require("./src/security/instanceRoutes");
 const { enforceInbound, checkWsInbound, SSH_PORT } = require("./src/security/middleware");
 
-// OS image catalog ("AMI") + reusable key pairs.
-const { listImages, resolveImage } = require("./src/images");
+// Reusable key pairs.
 const keypairs = require("./src/keypairs");
 const keypairRoutes = require("./src/keypairRoutes");
 
@@ -44,9 +43,6 @@ app.use("/api/security-groups", securityGroupRoutes);
 app.use("/api/projects", instanceSecurityRoutes);
 // Reusable key pairs.
 app.use("/api/key-pairs", keypairRoutes);
-
-// The OS image catalog the launch wizard renders (our "AMI" list).
-app.get("/api/images", (req, res) => res.status(200).json(listImages()));
 
 // ---------------------------------------------------------------------------
 // Multipass orchestration
@@ -207,9 +203,9 @@ function generateKeyPair(comment) {
 // custom cpu/memory, and finally to the default type.
 // ---------------------------------------------------------------------------
 const INSTANCE_TYPES = {
-  "t2.micro": { cpu: 1, memory: "1G" },
-  "t2.small": { cpu: 1, memory: "2G" },
-  "t2.medium": { cpu: 2, memory: "4G" },
+  "t2.micro": { cpu: 1, memory: "1G", disk: "5G" },
+  "t2.small": { cpu: 1, memory: "2G", disk: "10G" },
+  "t2.medium": { cpu: 2, memory: "4G", disk: "15G" },
 };
 const DEFAULT_INSTANCE_TYPE = "t2.micro";
 
@@ -228,7 +224,11 @@ function resolveSpec(body = {}) {
     typeof body.memory === "string" && /^[1-9][0-9]?G$/.test(body.memory.trim())
       ? body.memory.trim()
       : null;
-  if (cpu && mem) return { instanceType: "custom", cpu, memory: mem };
+  const dsk =
+    typeof body.disk === "string" && /^[1-9][0-9]{0,2}G$/.test(body.disk.trim())
+      ? body.disk.trim()
+      : "5G";
+  if (cpu && mem) return { instanceType: "custom", cpu, memory: mem, disk: dsk };
 
   return {
     instanceType: DEFAULT_INSTANCE_TYPE,
@@ -246,21 +246,22 @@ app.get("/api/instance-types", (req, res) => {
 // Launch with the public key injected via cloud-init user-data, piped over
 // STDIN (`--cloud-init -`). Using stdin avoids the snap-confinement problem
 // where multipassd cannot read a temp file (e.g. under /tmp).
-async function launchWithKey(instanceName, openssh, { cpu, memory, imageAlias }) {
+async function launchWithKey(instanceName, openssh, { cpu, memory, disk }) {
   const bin = await ensureMultipassBin();
-  // `multipass launch <image>` — the image alias is POSITIONAL and must come
-  // first. Omitting it silently boots the default LTS, which is how the OS
-  // selection was previously being ignored.
-  const args = ["launch"];
-  if (imageAlias) args.push(String(imageAlias));
-  args.push(
+  // No image argument: Multipass boots its default Ubuntu LTS image. We
+  // deliberately do NOT support choosing an OS — Multipass can only run Ubuntu,
+  // and anything else would require swapping in a different hypervisor driver.
+  const args = [
+    "launch",
     "--name",
     instanceName,
     "--cpus",
     String(cpu),
     "--memory",
-    String(memory)
-  );
+    String(memory),
+    "--disk",
+    String(disk),
+  ];
 
   // "Proceed without a key pair": no cloud-init at all. The VM still works and
   // the browser terminal still connects (that goes through Multipass, not SSH),
@@ -342,12 +343,7 @@ app.post("/api/projects", async (req, res) => {
 
   const instanceName = uniqueInstanceName(name);
   // Resolve the requested instance type into concrete, validated specs.
-  const { instanceType, cpu, memory } = resolveSpec(req.body);
-
-  // Resolve the OS image ("AMI"). Unsupported images are rejected, never
-  // silently downgraded to Ubuntu.
-  const { image, error: imageError } = resolveImage(req.body?.os);
-  if (imageError) return res.status(400).json({ error: imageError });
+  const { instanceType, cpu, memory, disk } = resolveSpec(req.body);
 
   // Security groups chosen in the launch wizard (like AWS: attached AT creation,
   // not bolted on afterwards).
@@ -396,11 +392,7 @@ app.post("/api/projects", async (req, res) => {
   try {
     // Launch is slow (image boot) — allow up to 5 minutes. When a key pair is
     // used, its PUBLIC key is baked into authorized_keys via cloud-init.
-    await launchWithKey(instanceName, keySel.openssh, {
-      cpu,
-      memory,
-      imageAlias: image.multipassAlias,
-    });
+    await launchWithKey(instanceName, keySel.openssh, { cpu, memory, disk });
 
     const ipAddress = await getInstanceIp(instanceName);
 
@@ -414,9 +406,9 @@ app.post("/api/projects", async (req, res) => {
           ipAddress,
           keyName: keySel.keyName,
           keyPairId: keySel.keyPairId,
-          os: image.id,
           cpu,
           memory,
+          disk,
           instanceType,
           // Attach the selected groups in the SAME write — the instance is never
           // live for even an instant without its firewall policy applied.

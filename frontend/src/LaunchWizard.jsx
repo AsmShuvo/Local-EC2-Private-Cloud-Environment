@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import api, { TIMEOUTS, describeError } from "./api";
 
 const INSTANCE_TYPES = [
-  { name: "t2.micro", cpu: 1, memory: "1G", label: "1 vCPU · 1 GB RAM" },
-  { name: "t2.small", cpu: 1, memory: "2G", label: "1 vCPU · 2 GB RAM" },
-  { name: "t2.medium", cpu: 2, memory: "4G", label: "2 vCPU · 4 GB RAM" },
+  { name: "t2.micro", cpu: 1, memory: "1G", disk: "5G", label: "1 vCPU · 1 GB RAM · 5 GB disk" },
+  { name: "t2.small", cpu: 1, memory: "2G", disk: "10G", label: "1 vCPU · 2 GB RAM · 10 GB disk" },
+  { name: "t2.medium", cpu: 2, memory: "4G", disk: "15G", label: "2 vCPU · 4 GB RAM · 15 GB disk" },
 ];
 
 const PROTOCOLS = ["TCP", "UDP", "ICMP", "ALL"];
@@ -13,19 +13,18 @@ const blankRule = () => ({ protocol: "TCP", port: "22", sourceIp: "0.0.0.0/0" })
 /**
  * EC2-style launch wizard.
  *  1. Name & description
- *  2. Application and OS Image (AMI)
- *  3. Instance type
- *  4. Key pair (login)        -> existing | create new | proceed without
- *  5. Network settings        -> create new security group | select existing
+ *  2. Instance type (vCPU / RAM / disk)
+ *  3. Key pair (login)   -> existing | create new | proceed without
+ *  4. Network settings   -> create new security group | select existing
+ *
+ * Note: there is deliberately NO OS selector. Multipass only boots Ubuntu, so
+ * offering a choice would be a lie. The default Ubuntu LTS image is always used.
  */
 export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
   // Step 1
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   // Step 2
-  const [images, setImages] = useState([]);
-  const [os, setOs] = useState("ubuntu-24.04");
-  // Step 3
   const [instanceType, setInstanceType] = useState("t2.micro");
   // Step 4 — key pair
   const [keyPairs, setKeyPairs] = useState([]);
@@ -45,13 +44,11 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
   const [error, setError] = useState("");
 
   const loadLookups = useCallback(async () => {
-    const [img, kp, sg, who] = await Promise.all([
-      api.get("/api/images").catch(() => ({ data: [] })),
+    const [kp, sg, who] = await Promise.all([
       api.get("/api/key-pairs").catch(() => ({ data: [] })),
       api.get("/api/security-groups").catch(() => ({ data: [] })),
       api.get("/api/security-groups/whoami").catch(() => ({ data: {} })),
     ]);
-    setImages(img.data);
     setKeyPairs(kp.data);
     setGroups(sg.data);
     setMyIp(who.data?.ip || "");
@@ -100,10 +97,10 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
       const payload = {
         name: name.trim(),
         description: description.trim(),
-        os,
         instanceType: spec.name,
         cpu: spec.cpu,
         memory: spec.memory,
+        disk: spec.disk,
         securityGroupIds: sgIds,
         keyPairMode: keyMode,
       };
@@ -139,7 +136,7 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
             <div>
               <h2>Launch an instance</h2>
               <p className="hdesc">
-                Create a virtual machine from an image, sized and secured to your needs.
+                Configure a new Ubuntu virtual machine — size it, secure it, launch it.
               </p>
             </div>
           </div>
@@ -187,45 +184,11 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
             </div>
           </div>
 
-          {/* 2 — OS image ---------------------------------------------- */}
-          <div className="wz-section">
-            <div className="wz-title">
-              <span className="wz-num">2</span> Application and OS Image
-              <span className="wz-sub">(Amazon Machine Image equivalent)</span>
-            </div>
-            <div className="ami-grid">
-              {images.map((img) => (
-                <label
-                  key={img.id}
-                  className={`ami-card ${os === img.id ? "is-on" : ""} ${
-                    img.supported ? "" : "is-disabled"
-                  }`}
-                  title={img.supported ? img.name : "Not available yet"}
-                >
-                  <input
-                    type="radio"
-                    name="os"
-                    value={img.id}
-                    checked={os === img.id}
-                    onChange={() => img.supported && setOs(img.id)}
-                    disabled={!img.supported || submitting}
-                  />
-                  <span className="ami-body">
-                    <span className="ami-name">
-                      {img.name}
-                      {!img.supported && <span className="ami-soon">Coming soon</span>}
-                    </span>
-                    <span className="ami-desc">{img.description}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
 
-          {/* 3 — Instance type ----------------------------------------- */}
+          {/* 2 — Instance type ----------------------------------------- */}
           <div className="wz-section">
             <div className="wz-title">
-              <span className="wz-num">3</span> Instance type
+              <span className="wz-num">2</span> Instance type
             </div>
             <select
               className="input select"
@@ -241,10 +204,10 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
             </select>
           </div>
 
-          {/* 4 — Key pair ---------------------------------------------- */}
+          {/* 3 — Key pair ---------------------------------------------- */}
           <div className="wz-section">
             <div className="wz-title">
-              <span className="wz-num">4</span> Key pair (login)
+              <span className="wz-num">3</span> Key pair (login)
             </div>
 
             <div className="radio-row">
@@ -331,10 +294,10 @@ export default function LaunchWizard({ onClose, onLaunched, onKeyIssued }) {
             )}
           </div>
 
-          {/* 5 — Network / security groups ------------------------------ */}
+          {/* 4 — Network / security groups ------------------------------ */}
           <div className="wz-section">
             <div className="wz-title">
-              <span className="wz-num">5</span> Network settings
+              <span className="wz-num">4</span> Network settings
               <span className="wz-sub">(firewall / security groups)</span>
             </div>
 

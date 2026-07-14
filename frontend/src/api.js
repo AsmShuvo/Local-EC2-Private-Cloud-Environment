@@ -33,9 +33,9 @@ export const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
 // Real VM operations are slow, so use generous per-operation timeouts.
 export const TIMEOUTS = {
   read: 20000, // GET list
-  // Must be LONGER than the backend's own launch timeout (600s), so the server's
+  // Must be LONGER than the backend timeout (600s) so the server's
   // real error message reaches the user instead of the client aborting first.
-  launch: 660000, // 11 min — covers a first-time OS image download
+  launch: 660000, // 11 min — a real VM boot is slow; must exceed the backend timeout
   action: 150000, // start / stop — up to 2.5 min
   terminate: 150000, // delete + purge
 };

@@ -1231,29 +1231,6 @@ table.sg-rules { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .wz-sub { font-size: 12px; font-weight: 500; color: var(--text-faint); }
 
-/* AMI picker */
-.ami-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.ami-card {
-  display: flex; align-items: flex-start; gap: 9px;
-  border: 1.5px solid var(--border-strong); border-radius: 10px;
-  padding: 11px 13px; cursor: pointer; background: #fbfbfe;
-  transition: border-color .12s, background .12s;
-}
-.ami-card:hover:not(.is-disabled) { border-color: var(--brand); }
-.ami-card.is-on { border-color: var(--brand); background: var(--brand-soft); }
-.ami-card.is-disabled { opacity: .55; cursor: not-allowed; background: #f4f5f9; }
-.ami-card input { margin-top: 3px; }
-.ami-body { display: flex; flex-direction: column; gap: 2px; }
-.ami-name {
-  font-size: 13.5px; font-weight: 700; color: var(--text);
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-}
-.ami-soon {
-  font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .4px;
-  color: #92660a; background: #fdf3d9; border: 1px solid #f0dca6;
-  border-radius: 4px; padding: 1px 5px;
-}
-.ami-desc { font-size: 11.5px; color: var(--text-dim); }
 
 /* radio rows (key pair / SG mode) */
 .radio-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }

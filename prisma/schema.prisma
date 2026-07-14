@@ -21,4 +21,36 @@ model CloudProject {
   memory       String   @default("1G")
   instanceType String   @default("t2.micro")
   createdAt    DateTime @default(now())
+
+  // Many-to-many: an instance can have many security groups, and a security
+  // group can be attached to many instances (implicit join table).
+  securityGroups SecurityGroup[] @relation("InstanceSecurityGroups")
+}
+
+model SecurityGroup {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  rules     SecurityRule[]
+  instances CloudProject[] @relation("InstanceSecurityGroups")
+}
+
+// One table for both directions — `direction` discriminates INBOUND/OUTBOUND.
+// Simpler and more scalable than two near-identical tables; the API still
+// presents them grouped as inboundRules / outboundRules.
+model SecurityRule {
+  id        Int      @id @default(autoincrement())
+  groupId   Int
+  direction String   @default("INBOUND") // INBOUND | OUTBOUND
+  protocol  String   @default("TCP") // TCP | UDP | ICMP | ALL
+  fromPort  Int? // null = all ports
+  toPort    Int? // null => single port (= fromPort)
+  sourceIp  String   @default("0.0.0.0/0") // CIDR; bare IP treated as /32
+  createdAt DateTime @default(now())
+
+  group SecurityGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, direction])
 }

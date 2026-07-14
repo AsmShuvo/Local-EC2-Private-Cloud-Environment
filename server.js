@@ -12,74 +12,31 @@ const { promisify } = require("node:util");
 const { URL } = require("node:url");
 const crypto = require("node:crypto");
 const pty = require("node-pty");
-const { PrismaClient } = require("@prisma/client");
-const { PrismaNeon } = require("@prisma/adapter-neon");
-const { neonConfig } = require("@neondatabase/serverless");
 const ws = require("ws");
 const { WebSocketServer } = ws;
 
-const execFileP = promisify(execFile);
+// Shared data layer (Prisma client + transient-failure retry wrapper).
+const { prisma, db } = require("./src/db");
 
-// The Neon serverless driver needs a WebSocket implementation in Node.
-neonConfig.webSocketConstructor = ws;
+// Security Groups (stateful firewall simulation).
+const securityGroupRoutes = require("./src/security/routes");
+const instanceSecurityRoutes = require("./src/security/instanceRoutes");
+const { enforceInbound, checkWsInbound, SSH_PORT } = require("./src/security/middleware");
+
+const execFileP = promisify(execFile);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Prisma 7 uses driver adapters. The Neon adapter handles Neon's pooler and
-// wake-from-idle behavior, avoiding intermittent ETIMEDOUT errors.
-const adapter = new PrismaNeon({ connectionString: process.env.DATABASE_URL });
-const prisma = new PrismaClient({ adapter });
+// req.ip should reflect the real client. We are not behind a reverse proxy, so
+// the socket address IS the client; if you ever put nginx in front, enable this.
+// app.set("trust proxy", true);
 
-// ---------------------------------------------------------------------------
-// Neon transient-failure retry
-//
-// Neon's pooler intermittently drops the WebSocket (close code 1006 / ETIMEDOUT),
-// especially when the compute is waking from auto-suspend. Those failures are
-// transient and succeed on a retry, so wrap every DB call rather than letting a
-// blip surface to the user. Logical errors (P2xxx, e.g. "record not found") are
-// NOT retried — they rethrow immediately.
-// ---------------------------------------------------------------------------
-const TRANSIENT_NET_CODES = [
-  "ETIMEDOUT",
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "ENETUNREACH",
-  "EPIPE",
-  "EAI_AGAIN",
-];
-
-function isTransientDbError(err) {
-  const code = err?.code;
-  if (typeof code === "string") {
-    if (code.startsWith("P2")) return false; // logical query error — do not retry
-    if (code.startsWith("P1")) return true; // connection/engine error
-    if (TRANSIENT_NET_CODES.includes(code)) return true;
-  }
-  // Neon's raw ws ErrorEvent arrives with an empty message and a WebSocket target.
-  if (!err?.message) return true;
-  return false;
-}
-
-async function db(run, { retries = 3, delayMs = 600 } = {}) {
-  let lastErr;
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      return await run();
-    } catch (err) {
-      lastErr = err;
-      if (!isTransientDbError(err) || attempt === retries) throw err;
-      console.warn(
-        `Transient DB error (attempt ${attempt}/${retries}): ${
-          err.code || "neon-ws-timeout"
-        } — retrying…`
-      );
-      await sleep(delayMs * attempt); // linear backoff
-    }
-  }
-  throw lastErr;
-}
+// Security group management API.
+app.use("/api/security-groups", securityGroupRoutes);
+// Instance <-> group binding (many-to-many).
+app.use("/api/projects", instanceSecurityRoutes);
 
 // ---------------------------------------------------------------------------
 // Multipass orchestration
@@ -342,7 +299,10 @@ app.get("/", (req, res) => {
 app.get("/api/projects", async (req, res) => {
   try {
     const projects = await db(() =>
-      prisma.cloudProject.findMany({ orderBy: { id: "desc" } })
+      prisma.cloudProject.findMany({
+        orderBy: { id: "desc" },
+        include: { securityGroups: { select: { id: true, name: true } } },
+      })
     );
     res.status(200).json(projects);
   } catch (error) {
@@ -362,6 +322,35 @@ app.post("/api/projects", async (req, res) => {
   const keyName = `${instanceName}-key`;
   // Resolve the requested instance type into concrete, validated specs.
   const { instanceType, cpu, memory } = resolveSpec(req.body);
+
+  // Security groups chosen in the launch wizard (like AWS: attached AT creation,
+  // not bolted on afterwards).
+  const rawSgIds = req.body?.securityGroupIds ?? [];
+  if (!Array.isArray(rawSgIds)) {
+    return res.status(400).json({ error: "securityGroupIds must be an array" });
+  }
+  const securityGroupIds = [...new Set(rawSgIds.map((v) => Number(v)))];
+  if (securityGroupIds.some((n) => !Number.isInteger(n))) {
+    return res.status(400).json({ error: "securityGroupIds must be integers" });
+  }
+
+  // Validate the groups exist BEFORE we spend ~90s booting a VM. Otherwise a
+  // typo'd id would only blow up at the final DB write, after all that work.
+  if (securityGroupIds.length) {
+    const found = await db(() =>
+      prisma.securityGroup.findMany({
+        where: { id: { in: securityGroupIds } },
+        select: { id: true },
+      })
+    );
+    if (found.length !== securityGroupIds.length) {
+      const known = new Set(found.map((g) => g.id));
+      const missing = securityGroupIds.filter((id) => !known.has(id));
+      return res
+        .status(400)
+        .json({ error: `Unknown security group id(s): ${missing.join(", ")}` });
+    }
+  }
 
   try {
     // Fresh, unique SSH key pair for this instance (private key returned once).
@@ -385,7 +374,13 @@ app.post("/api/projects", async (req, res) => {
           cpu,
           memory,
           instanceType,
+          // Attach the selected groups in the SAME write — the instance is never
+          // live for even an instant without its firewall policy applied.
+          ...(securityGroupIds.length
+            ? { securityGroups: { connect: securityGroupIds.map((id) => ({ id })) } }
+            : {}),
         },
+        include: { securityGroups: { select: { id: true, name: true } } },
       })
     );
     // The private key is sent EXACTLY ONCE and never persisted server-side.
@@ -393,9 +388,9 @@ app.post("/api/projects", async (req, res) => {
   } catch (err) {
     console.error("Error launching VM:", err);
     // Best-effort cleanup so a half-launched VM does not linger on the host.
+    // Scoped `delete --purge` — never the global `purge`, which can block.
     try {
-      await multipass(["delete", instanceName], { timeout: 60000 });
-      await multipass(["purge"], { timeout: 60000 });
+      await multipass(["delete", "--purge", instanceName], { timeout: 60000 });
     } catch {
       /* ignore cleanup failures */
     }
@@ -408,7 +403,7 @@ app.post("/api/projects", async (req, res) => {
 });
 
 // Stop the instance == `multipass stop <name>`, then mark STOPPED.
-app.post("/api/projects/:id/stop", async (req, res) => {
+app.post("/api/projects/:id/stop", enforceInbound(), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) {
     return res.status(400).json({ error: "Invalid project id" });
@@ -438,7 +433,7 @@ app.post("/api/projects/:id/stop", async (req, res) => {
 });
 
 // Start the instance == `multipass start <name>`, refresh IP, mark RUNNING.
-app.post("/api/projects/:id/start", async (req, res) => {
+app.post("/api/projects/:id/start", enforceInbound(), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) {
     return res.status(400).json({ error: "Invalid project id" });
@@ -474,7 +469,7 @@ app.post("/api/projects/:id/start", async (req, res) => {
 });
 
 // Terminate == `multipass delete <name>` + `multipass purge`, then drop the row.
-app.delete("/api/projects/:id", async (req, res) => {
+app.delete("/api/projects/:id", enforceInbound(), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) {
     return res.status(400).json({ error: "Invalid project id" });
@@ -487,16 +482,31 @@ app.delete("/api/projects/:id", async (req, res) => {
 
     if (project.instanceName) {
       try {
-        await multipass(["delete", project.instanceName], { timeout: 120000 });
-        await multipass(["purge"], { timeout: 120000 });
+        // `delete --purge` is ONE atomic, per-instance command.
+        //
+        // We used to run `delete` then a bare `purge`. That was wrong: `purge` is
+        // a GLOBAL operation over every soft-deleted instance, so it serialises
+        // on the multipass daemon and can block for a long time. When it stalled,
+        // the request never reached the DB delete — leaving the VM gone but the
+        // row behind (a zombie the user could never terminate). One scoped
+        // command avoids the global lock entirely.
+        await multipass(["delete", "--purge", project.instanceName], {
+          timeout: 90000, // stay well inside the client's 150s budget
+        });
       } catch (err) {
-        // If the VM is already gone, proceed to remove the DB record anyway.
         if (err.kind === "NO_MULTIPASS") throw err;
+
+        // VM already gone (or soft-deleted by a previous half-failed attempt):
+        // that's the desired end state, so fall through and clean up the row.
+        // This self-heals any zombie records created by the old code path.
         if (!isNotFoundError(err)) {
           return res
             .status(500)
             .json({ error: `Failed to terminate VM: ${err.message}` });
         }
+        console.warn(
+          `[terminate] ${project.instanceName} was already gone — removing the DB record.`
+        );
       }
     }
 
@@ -583,7 +593,7 @@ async function readMetrics(project) {
 }
 
 // Point-in-time metrics — the frontend polls this and builds the time series.
-app.get("/api/projects/:id/metrics", async (req, res) => {
+app.get("/api/projects/:id/metrics", enforceInbound(), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) {
     return res.status(400).json({ error: "Invalid project id" });
@@ -646,7 +656,31 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   const id = Number(match[1]);
-  wss.handleUpgrade(req, socket, head, (client) => handleTerminal(client, id));
+
+  // FIREWALL: evaluate the terminal as inbound TCP/22 traffic to this instance.
+  // Rejected BEFORE the WebSocket handshake completes, so a blocked client sees
+  // a refused connection rather than an open-then-closed socket.
+  checkWsInbound(id, req)
+    .then((verdict) => {
+      if (!verdict.allowed) {
+        console.warn(
+          `[SG] DENY ws ${verdict.ip} -> instance ${id} (TCP/${SSH_PORT}) — ${verdict.reason}`
+        );
+        socket.write(
+          "HTTP/1.1 403 Forbidden\r\n" +
+            "Content-Type: text/plain\r\n" +
+            "Connection: close\r\n\r\n" +
+            verdict.reason +
+            "\n"
+        );
+        return socket.destroy();
+      }
+      wss.handleUpgrade(req, socket, head, (client) => handleTerminal(client, id));
+    })
+    .catch((err) => {
+      console.error("[SG] ws upgrade check failed:", err);
+      socket.destroy(); // fail closed
+    });
 });
 
 async function handleTerminal(client, id) {

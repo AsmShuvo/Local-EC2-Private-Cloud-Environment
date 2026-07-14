@@ -3,6 +3,8 @@ import api, { API_BASE_URL, TIMEOUTS, describeError } from "./api";
 import TerminalModal from "./TerminalModal";
 import MonitoringModal from "./MonitoringModal";
 import KeyModal from "./KeyModal";
+import SecurityGroupsPanel from "./SecurityGroupsPanel";
+import InstanceSecurityModal from "./InstanceSecurityModal";
 import "./App.css";
 
 // Trigger a browser download of a text file (the private key .pem).
@@ -47,6 +49,10 @@ function App() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [instanceType, setInstanceType] = useState("t2.micro");
+  // Security groups chosen in the launch wizard (attached at creation, like AWS).
+  const [availableGroups, setAvailableGroups] = useState([]);
+  const [launchSgIds, setLaunchSgIds] = useState([]);
+  const [showLaunch, setShowLaunch] = useState(false); // launch wizard modal
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -59,6 +65,8 @@ function App() {
   const [monitorProject, setMonitorProject] = useState(null);
   // Set once after a create returns a private key (drives the download + modal).
   const [keyModal, setKeyModal] = useState(null);
+  const [securityProject, setSecurityProject] = useState(null);
+  const [tab, setTab] = useState("instances"); // "instances" | "security"
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
@@ -80,6 +88,25 @@ function App() {
     fetchProjects();
   }, [fetchProjects]);
 
+  // Load the security groups the launch wizard can offer.
+  const fetchGroups = useCallback(async () => {
+    try {
+      const { data } = await api.get("/api/security-groups");
+      setAvailableGroups(Array.isArray(data) ? data : []);
+    } catch {
+      /* non-fatal: the wizard just shows no groups */
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchGroups();
+  }, [fetchGroups]);
+
+  const toggleLaunchSg = (id) =>
+    setLaunchSgIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim() || submitting) return;
@@ -96,6 +123,7 @@ function App() {
           instanceType: spec.name,
           cpu: spec.cpu,
           memory: spec.memory,
+          securityGroupIds: launchSgIds,
         },
         { timeout: TIMEOUTS.launch }
       );
@@ -104,6 +132,8 @@ function App() {
       setProjects((prev) => [project, ...prev]);
       setName("");
       setDescription("");
+      setLaunchSgIds([]);
+      setShowLaunch(false);
       setOnline(true);
 
       if (privateKey) {
@@ -236,6 +266,26 @@ function App() {
       </div>
 
       <div className="content">
+        {/* Tabs */}
+        <div className="tabs">
+          <button
+            className={`tab ${tab === "instances" ? "is-active" : ""}`}
+            onClick={() => setTab("instances")}
+          >
+            Instances
+          </button>
+          <button
+            className={`tab ${tab === "security" ? "is-active" : ""}`}
+            onClick={() => setTab("security")}
+          >
+            🛡️ Security Groups
+          </button>
+        </div>
+
+        {tab === "security" && <SecurityGroupsPanel />}
+
+        {tab === "instances" && (
+        <>
         {/* Dashboard stats */}
         <div className="stats">
           <div className="stat">
@@ -274,18 +324,35 @@ function App() {
           </div>
         )}
 
-        {/* Create instance */}
-        <section className="panel">
-          <div className="panel-header">
-            <div className="htitle">
-              <span className="accent-bar" />
-              <div>
-                <h2>Launch instance</h2>
-                <p className="hdesc">Provision a new project instance.</p>
+        {/* Launch wizard — opened by the "Launch instance" button */}
+        {showLaunch && (
+          <div
+            className="modal-overlay"
+            onMouseDown={() => !submitting && setShowLaunch(false)}
+          >
+            <section
+              className="modal launch-modal"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="modal-head">
+                <div className="htitle">
+                  <span className="accent-bar" />
+                  <div>
+                    <h2>Launch instance</h2>
+                    <p className="hdesc">
+                      Configure and provision a new virtual machine.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  className="modal-close"
+                  onClick={() => setShowLaunch(false)}
+                  disabled={submitting}
+                >
+                  ✕
+                </button>
               </div>
-            </div>
-          </div>
-          <div className="panel-body">
+              <div className="launch-modal-body">
             <form onSubmit={handleSubmit}>
               <div className="form-row">
                 <label htmlFor="p-name">Instance name</label>
@@ -332,7 +399,64 @@ function App() {
                 </span>
               </div>
 
-              <div className="form-actions">
+              <div className="form-row">
+                <label>
+                  Security groups <span className="opt">— firewall applied at launch</span>
+                </label>
+                {availableGroups.length === 0 ? (
+                  <div className="sg-launch-empty">
+                    No security groups yet. Create one in the{" "}
+                    <button
+                      type="button"
+                      className="mini-link"
+                      onClick={() => setTab("security")}
+                    >
+                      Security Groups
+                    </button>{" "}
+                    tab. Launching with none leaves the instance unrestricted.
+                  </div>
+                ) : (
+                  <div className="sg-launch-picker">
+                    {availableGroups.map((g) => (
+                      <label
+                        key={g.id}
+                        className={`sg-launch-option ${
+                          launchSgIds.includes(g.id) ? "is-on" : ""
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={launchSgIds.includes(g.id)}
+                          onChange={() => toggleLaunchSg(g.id)}
+                          disabled={submitting}
+                        />
+                        <span>
+                          <span className="sg-launch-name">🛡️ {g.name}</span>
+                          <span className="sg-launch-rules">
+                            {g.inboundRules.length === 0
+                              ? "no inbound rules — denies everything"
+                              : g.inboundRules
+                                  .map(
+                                    (r) =>
+                                      `${r.protocol}/${
+                                        r.fromPort == null ? "all" : r.fromPort
+                                      } ← ${r.sourceIp}`
+                                  )
+                                  .join(" · ")}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <span className="field-hint">
+                  {launchSgIds.length === 0
+                    ? "None selected — the instance will accept traffic from anyone."
+                    : `${launchSgIds.length} group(s) selected. Only matching traffic will be allowed.`}
+                </span>
+              </div>
+
+              <div className="form-actions launch-foot">
                 {submitting && (
                   <span className="launch-hint">
                     Provisioning a real VM — this can take ~30–90s…
@@ -341,13 +465,10 @@ function App() {
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  onClick={() => {
-                    setName("");
-                    setDescription("");
-                  }}
+                  onClick={() => setShowLaunch(false)}
                   disabled={submitting}
                 >
-                  Clear
+                  Cancel
                 </button>
                 <button
                   type="submit"
@@ -364,8 +485,10 @@ function App() {
                 </button>
               </div>
             </form>
+              </div>
+            </section>
           </div>
-        </section>
+        )}
 
         {/* Instances table */}
         <section className="panel">
@@ -377,7 +500,18 @@ function App() {
                 <p className="hdesc">Loaded from the database on start.</p>
               </div>
             </div>
-            <span className="count-badge">{projects.length}</span>
+            <div className="panel-head-actions">
+              <span className="count-badge">{projects.length}</span>
+              <button className="btn btn-ghost sm" onClick={fetchProjects} title="Refresh">
+                ⟳
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => setShowLaunch(true)}
+              >
+                Launch instance
+              </button>
+            </div>
           </div>
 
           <div className="table-wrap">
@@ -464,6 +598,15 @@ function App() {
                           {p.instanceName && (
                             <div className="inst-name">{p.instanceName}</div>
                           )}
+                          {p.securityGroups && p.securityGroups.length > 0 && (
+                            <div className="sg-badges">
+                              {p.securityGroups.map((g) => (
+                                <span className="sg-chip" key={g.id} title="Security group">
+                                  🛡️ {g.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </td>
                         <td className="col-type">
                           <span className="type-badge">
@@ -484,6 +627,13 @@ function App() {
                         <td className="col-date">{formatDate(p.createdAt)}</td>
                         <td className="col-actions">
                           <div className="row-actions">
+                            <button
+                              className="rbtn"
+                              onClick={() => setSecurityProject(p)}
+                              title="Manage security groups"
+                            >
+                              🛡️
+                            </button>
                             <button
                               className="rbtn connect"
                               onClick={() => setTerminalProject(p)}
@@ -546,6 +696,9 @@ function App() {
           </div>
         </section>
 
+        </>
+        )}
+
         <footer className="footer">
           Stratus Console · connected to <code>{API_BASE_URL}</code>
         </footer>
@@ -565,6 +718,16 @@ function App() {
       )}
       {keyModal && (
         <KeyModal info={keyModal} onClose={() => setKeyModal(null)} />
+      )}
+      {securityProject && (
+        <InstanceSecurityModal
+          project={securityProject}
+          onClose={() => setSecurityProject(null)}
+          onSaved={() => {
+            fetchProjects();
+            fetchGroups();
+          }}
+        />
       )}
     </div>
   );

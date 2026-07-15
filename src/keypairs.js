@@ -1,14 +1,20 @@
 // Reusable key pairs — the AWS EC2 key-pair model.
 //
-// SECURITY MODEL (identical to AWS):
-//   * We generate an RSA pair, store ONLY the public key, and hand the private
-//     key to the user EXACTLY ONCE. It is never written to disk or the DB.
+// SECURITY MODEL (encrypted-at-rest variant of the AWS model):
+//   * We generate an RSA pair and store the public key in the clear plus the
+//     private key ENCRYPTED (AES-256-GCM, key derived from KEY_ENCRYPTION_SECRET).
+//   * The private key is decrypted in memory ONLY to stream a .pem download. It
+//     is never returned by a metadata endpoint and never rendered on screen.
+//   * TRADE-OFF vs AWS: AWS cannot re-issue a lost private key; we can. That
+//     convenience means the server holds recoverable key material, so the
+//     encryption secret must be protected as carefully as the keys themselves.
 //   * "Use an existing key pair" re-injects the STORED PUBLIC KEY into the new
 //     VM, so the .pem the user downloaded earlier keeps working. No private key
 //     is returned in that case — the user already has it.
 //   * Losing the private key means losing key-based access. Same as AWS.
 const crypto = require("node:crypto");
 const { prisma, db } = require("./db");
+const secretbox = require("./secretbox");
 
 // --- OpenSSH wire-format encoding (no external deps) -------------------------
 function sshString(buf) {
@@ -78,21 +84,103 @@ async function createKeyPair(rawName) {
   const { privateKeyPem, openssh, fingerprint } = generate(name);
   const keyPair = await db(() =>
     prisma.keyPair.create({
-      data: { name, publicKey: openssh, fingerprint },
+      data: {
+        name,
+        publicKey: openssh,
+        fingerprint,
+        // Encrypted at rest; only ever decrypted to serve a download.
+        encryptedPrivateKey: secretbox.encrypt(privateKeyPem),
+      },
     })
   );
   return { keyPair, privateKey: privateKeyPem };
 }
 
-/** Never leaks the public key blob to list views — just the metadata. */
+/** List view: metadata only. NEVER includes the private key. */
 function serialize(kp) {
   return {
     id: kp.id,
     name: kp.name,
     fingerprint: kp.fingerprint,
     createdAt: kp.createdAt,
+    algorithm: "RSA 2048",
+    downloadable: Boolean(kp.encryptedPrivateKey),
     instanceCount: kp.instances ? kp.instances.length : undefined,
   };
+}
+
+/**
+ * Detail view for the Key Pair Details modal.
+ * Includes the PUBLIC key + the linked instance, and EXCLUDES the private key.
+ */
+function serializeDetail(kp) {
+  const instance = kp.instances && kp.instances[0];
+  return {
+    id: kp.id,
+    name: kp.name,
+    fingerprint: kp.fingerprint,
+    publicKey: kp.publicKey, // public half — safe to expose
+    createdAt: kp.createdAt,
+    algorithm: "RSA 2048",
+    downloadable: Boolean(kp.encryptedPrivateKey),
+    fileName: `${kp.name}.pem`,
+    username: "ubuntu", // Multipass provisions this user on every image
+    instance: instance
+      ? {
+          id: instance.id,
+          name: instance.name,
+          instanceName: instance.instanceName,
+          ipAddress: instance.ipAddress,
+          status: instance.status,
+        }
+      : null,
+    instanceCount: kp.instances ? kp.instances.length : 0,
+  };
+}
+
+/** Fetch full detail by NAME (what the modal uses). */
+async function getKeyPairDetail(name) {
+  const kp = await db(() =>
+    prisma.keyPair.findUnique({
+      where: { name: String(name) },
+      include: {
+        instances: {
+          select: {
+            id: true,
+            name: true,
+            instanceName: true,
+            ipAddress: true,
+            status: true,
+          },
+          orderBy: { id: "desc" },
+        },
+      },
+    })
+  );
+  return kp ? serializeDetail(kp) : null;
+}
+
+/**
+ * Decrypt the stored private key for a download. In-memory only — the plaintext
+ * is never persisted, logged, or sent to any metadata endpoint.
+ */
+async function getPrivateKeyForDownload(name) {
+  const kp = await db(() =>
+    prisma.keyPair.findUnique({ where: { name: String(name) } })
+  );
+  if (!kp) {
+    throw Object.assign(new Error("Key pair not found"), { status: 404 });
+  }
+  if (!kp.encryptedPrivateKey) {
+    // Pre-dates encrypted storage: we genuinely do not have it.
+    throw Object.assign(
+      new Error(
+        `"${kp.name}" was created before encrypted storage was enabled, so its private key was never kept and cannot be re-downloaded.`
+      ),
+      { status: 410 }
+    );
+  }
+  return { pem: secretbox.decrypt(kp.encryptedPrivateKey), fileName: `${kp.name}.pem` };
 }
 
 async function listKeyPairs() {
@@ -161,6 +249,9 @@ async function resolveForLaunch({ mode, keyPairId, keyPairName }, fallbackName) 
 
 module.exports = {
   generate,
+  serializeDetail,
+  getKeyPairDetail,
+  getPrivateKeyForDownload,
   fingerprintOf,
   createKeyPair,
   listKeyPairs,

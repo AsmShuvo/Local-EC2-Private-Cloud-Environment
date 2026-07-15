@@ -45,6 +45,10 @@ model KeyPair {
   name        String   @unique
   publicKey   String // OpenSSH authorized_keys format ("ssh-rsa AAAA...")
   fingerprint String? // SHA256:... like `ssh-keygen -l`
+  // AES-256-GCM ciphertext of the PEM private key ("iv:tag:ciphertext", base64).
+  // Decrypted in memory ONLY to stream a download; never returned by any
+  // metadata endpoint and never rendered on screen.
+  encryptedPrivateKey String?
   createdAt   DateTime @default(now())
 
   instances CloudProject[]

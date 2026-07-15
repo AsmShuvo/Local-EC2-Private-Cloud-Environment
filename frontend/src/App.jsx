@@ -3,6 +3,7 @@ import api, { API_BASE_URL, TIMEOUTS, describeError } from "./api";
 import TerminalModal from "./TerminalModal";
 import MonitoringModal from "./MonitoringModal";
 import KeyModal from "./KeyModal";
+import KeyPairDetailsModal from "./KeyPairDetailsModal";
 import LaunchWizard from "./LaunchWizard";
 import SecurityGroupsPanel from "./SecurityGroupsPanel";
 import InstanceSecurityModal from "./InstanceSecurityModal";
@@ -53,6 +54,7 @@ function App() {
   const [monitorProject, setMonitorProject] = useState(null);
   // Set once after a create returns a private key (drives the download + modal).
   const [keyModal, setKeyModal] = useState(null);
+  const [detailKeyName, setDetailKeyName] = useState(null); // key pair details modal
   const [securityProject, setSecurityProject] = useState(null);
   const [tab, setTab] = useState("instances"); // "instances" | "security"
 
@@ -351,12 +353,13 @@ function App() {
                           <span className="name-row">
                             <a href="#">{p.name}</a>
                             {p.keyName && (
-                              <span
+                              <button
                                 className="key-badge"
-                                title={`Secured with key pair: ${p.keyName}`}
+                                title={`View key pair: ${p.keyName}`}
+                                onClick={() => setDetailKeyName(p.keyName)}
                               >
-                                🔑
-                              </span>
+                                🔑 {p.keyName}
+                              </button>
                             )}
                           </span>
                           <div className="ip-line">
@@ -502,6 +505,12 @@ function App() {
       )}
       {keyModal && (
         <KeyModal info={keyModal} onClose={() => setKeyModal(null)} />
+      )}
+      {detailKeyName && (
+        <KeyPairDetailsModal
+          keyName={detailKeyName}
+          onClose={() => setDetailKeyName(null)}
+        />
       )}
       {securityProject && (
         <InstanceSecurityModal

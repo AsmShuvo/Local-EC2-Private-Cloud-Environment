@@ -44,6 +44,7 @@ app.use("/api/security-groups", securityGroupRoutes);
 app.use("/api/projects", instanceSecurityRoutes);
 // Reusable key pairs.
 app.use("/api/key-pairs", keypairRoutes);
+app.use("/api/keypairs", keypairRoutes); // alias
 
 // The OS image catalog the launch wizard renders (our "AMI" list).
 app.get("/api/images", (req, res) => res.status(200).json(listImages()));
